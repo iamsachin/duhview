@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict
@@ -6,6 +7,8 @@ from pydantic import BaseModel, ConfigDict
 from duhview.types import Severity
 
 CONFIG_PATH = ".duhview/config.yaml"
+# Generated files: large, costly to send to a model, rarely worth reviewing.
+DEFAULT_EXCLUDE = ["*.lock", "*package-lock.json", "*pnpm-lock.yaml", "*.min.js", "*.min.css", "*.map"]
 
 
 class _Strict(BaseModel):
@@ -20,7 +23,7 @@ class ModelCfg(_Strict):
 class ReviewCfg(_Strict):
     block_on_severity: Severity = Severity.major
     min_severity: Severity = Severity.minor
-    exclude: list[str] = []
+    exclude: list[str] = DEFAULT_EXCLUDE  # setting this replaces the defaults
 
 
 class Rule(_Strict):
@@ -39,6 +42,9 @@ class Config(_Strict):
     review: ReviewCfg = ReviewCfg()
     rules: list[Rule] = []
     budget: BudgetCfg = BudgetCfg()
+    # None = run whichever scanners are installed; a list = require exactly these.
+    scanners: list[Literal["gitleaks", "semgrep"]] | None = None
+    offline: bool = False  # skip scanners that need the network
 
 
 def load_config(root: Path) -> Config:

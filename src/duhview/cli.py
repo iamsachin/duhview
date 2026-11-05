@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Annotated
 
@@ -8,7 +9,7 @@ from duhview import __version__
 from duhview.collect import GitError, Target, get_change, repo_root
 from duhview.config import Config, load_config
 from duhview.model import ModelError, resolve_model
-from duhview.report import EXIT_CLEAN, EXIT_ERROR, exit_code, receipt, to_markdown
+from duhview.report import EXIT_CLEAN, EXIT_ERROR, exit_code, receipt, write_reports
 from duhview.review import run_review
 
 app = typer.Typer(add_completion=False, help="Agentic code review for your changes.")
@@ -34,6 +35,8 @@ def review(
     verifier_model: Annotated[str | None, typer.Option(help="Enable the verify pass with this model.")] = None,
     spec: Annotated[Path | None, typer.Option(exists=True, dir_okay=False, help="Requirements to check against.")] = None,
     json_out: Annotated[bool, typer.Option("--json", help="Print the result as JSON.")] = False,
+    sarif: Annotated[Path | None, typer.Option(dir_okay=False, help="Also write a SARIF report here.")] = None,
+    offline: Annotated[bool, typer.Option("--offline", help="Skip scanners that need the network.")] = False,
 ) -> None:
     """Review uncommitted changes (default), staged changes, a branch or a commit.
 
@@ -59,10 +62,11 @@ def review(
 
     if not json_out:
         typer.echo(f"duhview: reviewing {len(change.files)} file(s) in {change.target} with {finder}…", err=True)
-    result = asyncio.run(run_review(root, change, cfg, finder, verifier, spec))
-    report_path = Path(result.archive_dir or ".") / "report.md"
-    report_path.write_text(to_markdown(result))
-    typer.echo(result.model_dump_json(indent=2) if json_out else receipt(result, str(report_path)))
+    result = asyncio.run(run_review(root, change, cfg, finder, verifier, spec, offline))
+    reports = write_reports(result, Path(result.archive_dir or "."))
+    if sarif:
+        shutil.copyfile(reports["sarif"], sarif)
+    typer.echo(result.model_dump_json(indent=2) if json_out else receipt(result, str(reports["md"])))
     raise typer.Exit(exit_code(result, cfg.review.block_on_severity))
 
 

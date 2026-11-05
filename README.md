@@ -23,6 +23,8 @@ duhview review --model gpt-5.5       # provider is inferred from the model name
 duhview review --model gpt-5.4-mini --verifier-model gpt-5.5   # cheap finder + verify pass
 duhview review --spec docs/feature.md   # also check against requirements
 duhview review --json                # machine-readable output
+duhview review --sarif out.sarif     # also write SARIF (GitHub code scanning, CI tools)
+duhview review --offline             # skip scanners that need the network
 ```
 
 Default model: `claude-sonnet-5-5`. Only Anthropic and OpenAI models are supported.
@@ -32,8 +34,20 @@ with a cheaper finder model it removes most false positives. Turn it on with `--
 
 Exit codes: `0` clean · `1` findings at or above `block_on_severity` · `2` review incomplete · `3` error.
 
-Each run is archived (prompts, model output, rejected findings, report) in `.duhview/runs/`,
-which ignores itself in git.
+Each run is archived (prompts, model output, rejected findings, and the report as Markdown, JSON
+and SARIF) in `.duhview/runs/`, which ignores itself in git.
+
+## How a review runs
+
+1. **Collect** the diff. Lockfiles, minified files and source maps are skipped by default.
+2. **Scan** with [gitleaks](https://github.com/gitleaks/gitleaks) and [semgrep](https://semgrep.dev)
+   if they are installed. Only findings on lines the change adds are kept. semgrep uses a local
+   `.semgrep.yml` if present, otherwise the `p/default` registry ruleset (needs the network).
+3. **Find**: changed files are packed into review units; one agent reviews each unit in parallel,
+   with scanner results as leads. Each agent gets a share of the budget and is told to wrap up
+   and report what it has found as it nears its share.
+4. **Verify** (optional): each agent finding is re-checked in a fresh context.
+
 
 ## Configuration
 
@@ -46,7 +60,7 @@ model:
 review:
   block_on_severity: major
   min_severity: minor
-  exclude: ["dist/*", "*.lock"]
+  exclude: ["dist/*", "*.lock"]   # replaces the default lockfile/minified excludes
 rules:
   - text: "Handlers must not run raw SQL; use the repository layer."
     paths: ["app/handlers/*"]
@@ -54,6 +68,8 @@ budget:
   max_usd_per_review: 1.00
   max_tool_calls_per_agent: 40
   agent_timeout_s: 300
+scanners: [gitleaks, semgrep]   # omit to run whichever are installed; listed ones are required
+offline: false
 ```
 
 duhview also reads `AGENTS.md`, `CLAUDE.md` and `.duhview/rules.md` as project context, and

@@ -92,7 +92,7 @@ def test_verifier_drops_rejected_findings(repo: Path, monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(model, "complete", fake_complete)
     (repo / "src" / "app.py").write_text("def add(a, b):\n    return a - b\n")
-    cfg = Config()
+    cfg = Config(scanners=[])
     result = asyncio.run(run_review(repo, get_change(repo, Target(), cfg), cfg, "m", verifier, None))
     assert sorted(f.title for f in result.findings) == sorted(expected)
     assert all(f.verified == (verifier is not None) for f in result.findings)

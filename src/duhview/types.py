@@ -69,6 +69,8 @@ class ReviewResult(BaseModel):
     verifier_model: str | None
     findings: list[Finding]
     incomplete: list[str]
+    notes: list[str] = []  # informational, e.g. an optional scanner that is not installed
+    units: int = 1
     cost_usd: float
     cost_known: bool
     archive_dir: str | None = None

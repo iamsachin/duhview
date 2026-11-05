@@ -32,6 +32,14 @@ def resolve_model(name: str) -> str:
     return f"{provider}/{model}"
 
 
+def cost_of(response: Any) -> float | None:
+    """USD cost of one response, or None when LiteLLM has no price for the model."""
+    try:
+        return float(litellm.completion_cost(completion_response=response))
+    except Exception:  # noqa: BLE001 - LiteLLM raises various errors for unpriced models
+        return None
+
+
 class Budget:
     def __init__(self, max_usd: float):
         self.max_usd = max_usd
@@ -39,10 +47,11 @@ class Budget:
         self.known = True  # False once any call could not be priced
 
     def charge(self, response: Any) -> None:
-        try:
-            self.spent += litellm.completion_cost(completion_response=response)
-        except Exception:  # noqa: BLE001 - LiteLLM has no price for some models
+        cost = cost_of(response)
+        if cost is None:
             self.known = False
+        else:
+            self.spent += cost
 
     def check(self) -> None:
         if self.spent >= self.max_usd:

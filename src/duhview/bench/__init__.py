@@ -114,7 +114,7 @@ async def run_case(case: Case, finder: str, verifier: str | None) -> Score:
     with tempfile.TemporaryDirectory(prefix=f"duhview-{case.name}-") as tmp:
         root = Path(tmp).resolve()
         build_repo(case, root)
-        cfg = Config()
+        cfg = Config(scanners=[])  # measure the agent alone
         result = await run_review(root, get_change(root, Target(), cfg), cfg, finder, verifier, None)
     caught, true = score(case, result.findings)
     return Score(case.name, len(case.spec.bugs), caught, len(result.findings), true, result.cost_usd,
