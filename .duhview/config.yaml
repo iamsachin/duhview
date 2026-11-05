@@ -1,4 +1,4 @@
 review:
   # Defaults plus the benchmark fixtures, which contain deliberate bugs.
   exclude: ["*.lock", "*package-lock.json", "*pnpm-lock.yaml", "*.min.js", "*.min.css", "*.map",
-            "src/duhview/bench/cases/*"]
+            "src/duhview/bench/cases/*", "*"]

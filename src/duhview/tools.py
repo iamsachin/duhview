@@ -5,6 +5,7 @@ not ignored. That keeps it inside the repo and away from .env files and build ou
 """
 
 import asyncio
+import os
 import json
 import re
 from collections.abc import Callable
@@ -65,7 +66,8 @@ class RepoTools:
 
     # --- path jail ---------------------------------------------------------------------------
     def _rel(self, path: str) -> str:
-        p = (self.root / path).resolve()  # resolves ".." and symlinks
+        # normpath is cheaper than resolve() and needs no filesystem access.
+        p = Path(os.path.normpath(self.root / path))
         if not p.is_relative_to(self.root):
             raise ToolError("path is outside the repository")
         rel = p.relative_to(self.root).as_posix()

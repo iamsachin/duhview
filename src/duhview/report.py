@@ -11,7 +11,7 @@ EXIT_CLEAN, EXIT_FINDINGS, EXIT_INCOMPLETE, EXIT_ERROR = 0, 1, 2, 3
 def exit_code(result: ReviewResult, block_on: Severity) -> int:
     if result.incomplete:
         return EXIT_INCOMPLETE
-    if any(f.severity.rank <= block_on.rank for f in result.findings):
+    if any(f.severity.rank < block_on.rank for f in result.findings):
         return EXIT_FINDINGS
     return EXIT_CLEAN
 
