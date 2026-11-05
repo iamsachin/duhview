@@ -46,7 +46,14 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        pip install --quiet semgrep
+        bin="$RUNNER_TEMP/duhview-scanners"
+        mkdir -p "$bin"
+        echo "$bin" >> "$GITHUB_PATH"
+        # semgrep gets its own virtualenv: installed next to duhview it downgrades shared
+        # dependencies (it broke LiteLLM's tool calling). Only its executable goes on PATH.
+        python -m venv "$RUNNER_TEMP/semgrep-venv"
+        "$RUNNER_TEMP/semgrep-venv/bin/pip" install --quiet semgrep
+        ln -s "$RUNNER_TEMP/semgrep-venv/bin/semgrep" "$bin/semgrep"
         # Pinned version and SHA-256 from the official release, so a changed download is rejected.
         version=8.30.1
         case "$RUNNER_OS-$RUNNER_ARCH" in
@@ -54,13 +61,10 @@ runs:
           Linux-ARM64) arch=linux_arm64; sha=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 ;;
           *) echo "::notice::gitleaks not installed: no pinned build for $RUNNER_OS/$RUNNER_ARCH"; exit 0 ;;
         esac
-        dir="$RUNNER_TEMP/gitleaks"
-        mkdir -p "$dir"
-        file="$dir/gitleaks.tar.gz"
+        file="$RUNNER_TEMP/gitleaks.tar.gz"
         curl -sSfL -o "$file" "https://github.com/gitleaks/gitleaks/releases/download/v$version/gitleaks_${version}_${arch}.tar.gz"
         echo "$sha  $file" | sha256sum -c -
-        tar -xzf "$file" -C "$dir" gitleaks
-        echo "$dir" >> "$GITHUB_PATH"
+        tar -xzf "$file" -C "$bin" gitleaks
 
     - name: Review
       if: github.event.pull_request.head.repo.full_name == github.repository
