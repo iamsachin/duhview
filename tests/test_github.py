@@ -10,7 +10,7 @@ from duhview import github, model
 from duhview.cli import app
 from duhview.collect import Change, hunk_lines, revision_reader
 from duhview.config import load_config
-from duhview.types import Finding, FindingDraft, ReviewResult
+from duhview.types import Finding, FindingDraft, ReviewResult, Severity
 
 from .test_core import _resp
 
@@ -92,6 +92,93 @@ def test_post_falls_back_to_summary_when_github_rejects_positions(monkeypatch: p
     assert calls[1]["commit_id"] == "h" * 40 and "a.py:11" in calls[1]["body"]
 
 
+def test_comment_and_summary_formatting() -> None:
+    scanner = Finding.from_draft(FindingDraft(file="a.py", start_line=11, end_line=11, severity="critical",
+                                              category="security", title="key", explanation="e"),
+                                 source="scanner:gitleaks")
+    review = github.build_review(_result(scanner, _f(40, 40, "far away")), Change("PR #1", {"a.py": DIFF}))
+    (c,) = review["comments"]
+    assert c["body"].startswith("**🔴 Critical** · Security · found by gitleaks\n\n**key**")
+    body = review["body"]
+    assert "| 🔴 Critical | 🟠 Major |" in body and "| 1 | 1 |" in body
+    assert "<details><summary>Findings outside the diff (1)</summary>" in body and "far away" in body
+
+
+# --- re-runs: only what is new ---------------------------------------------------------------
+
+
+def _t(line: int | None, sev: str = "major", resolved: bool = False, outdated: bool = False,
+       path: str = "a.py", tid: str = "T1") -> github.Thread:
+    return github.Thread(tid, 100, path, line, "bug", Severity(sev), resolved, outdated)
+
+
+def _sev(f: Finding, sev: str) -> Finding:
+    return f.model_copy(update={"severity": Severity(sev)})
+
+
+CHANGE = Change("PR #1", {"a.py": DIFF})
+
+
+def test_plan_skips_known_posts_new_and_replies_when_worse() -> None:
+    known, fresh, worse = _f(11, 11), _f(30, 30, "fresh"), _sev(_f(20, 20), "critical")
+    plan = github.plan_sync(_result(known, fresh, worse), CHANGE, [_t(12), _t(21, tid="T2")], [])
+    assert plan.new == [fresh]
+    assert [(t.id, f.severity) for t, f in plan.worse] == [("T2", "critical")]
+    assert plan.fixed == [] and plan.open == 2
+
+
+def test_plan_fixed_only_when_code_changed_and_review_complete() -> None:
+    gone_changed, gone_unchanged = _t(11, outdated=True, tid="A"), _t(30, tid="B")
+    left_diff = _t(5, path="removed.py", tid="C")
+    plan = github.plan_sync(_result(), CHANGE, [gone_changed, gone_unchanged, left_diff], [])
+    # B's code did not change: the model merely didn't repeat it, so it stays open.
+    assert [t.id for t in plan.fixed] == ["A", "C"] and plan.open == 1
+    incomplete = _result().model_copy(update={"incomplete": ["budget"]})
+    assert github.plan_sync(incomplete, CHANGE, [gone_changed], []).fixed == []
+
+
+def test_plan_respects_human_resolved_threads_and_listed_findings() -> None:
+    f = _sev(_f(11, 11), "critical")
+    plan = github.plan_sync(_result(f), CHANGE, [_t(11, resolved=True)], [])
+    assert plan.new == [] and plan.worse == []  # a person resolved it: no repost, no reply
+    listed = github.plan_sync(_result(_f(40, 40)), CHANGE, [], [github.Listed("a.py", 41, "bug")])
+    assert listed.new == []
+
+
+def test_threads_are_read_from_markers(monkeypatch: pytest.MonkeyPatch) -> None:
+    ours = _comment_body_for(_sev(_f(11, 11), "minor"))
+    worse_reply = "⬆️ Now [major] <!-- duhview:{\"cat\":\"bug\",\"sev\":\"major\"} -->"
+    nodes = [
+        {"id": "T1", "isResolved": False, "isOutdated": True, "path": "a.py", "line": None, "originalLine": 11,
+         "comments": {"nodes": [{"databaseId": 7, "body": ours}, {"databaseId": 8, "body": worse_reply}]}},
+        {"id": "T2", "isResolved": False, "isOutdated": False, "path": "a.py", "line": 3, "originalLine": 3,
+         "comments": {"nodes": [{"databaseId": 9, "body": "a human comment"}]}},
+    ]
+    monkeypatch.setattr(github, "api", lambda *a, **k: {"data": {"repository": {"pullRequest": {
+        "reviewThreads": {"nodes": nodes}}}}})
+    pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
+    (t,) = github.existing_threads(pr, "tok")
+    assert (t.id, t.root_id, t.line, t.severity, t.outdated) == ("T1", 7, 11, "major", True)
+
+
+def _comment_body_for(f: Finding) -> str:
+    return github.build_review(_result(f), CHANGE)["comments"][0]["body"]
+
+
+def test_sync_rerun_posts_nothing_new_but_resolves_fixed(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str]] = []
+    threads = [_t(11, outdated=True, tid="FIXED"), _t(20, tid="SAME")]
+    monkeypatch.setattr(github, "existing_threads", lambda pr, tok: threads)
+    monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
+    monkeypatch.setattr(github, "api", lambda m, p, t, b=None: calls.append((m, p)) or {"data": {}})
+    pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
+    msg = github.sync_review(pr, _result(_f(20, 20)), CHANGE, "tok")
+    assert "nothing new to post" in msg and "1 fixed" in msg
+    assert ("POST", "/repos/o/r/pulls/1/comments/100/replies") in calls  # "fixed" reply
+    assert ("POST", "/graphql") in calls  # resolve
+    assert not any(p.endswith("/reviews") for _, p in calls)  # no new review
+
+
 # --- end to end: --pr --post against a local "origin" ---------------------------------------
 
 
@@ -142,10 +229,13 @@ def test_review_pr_and_post(pr_repo: tuple[Path, str, str], monkeypatch: pytest.
     posted: list[dict[str, Any]] = []
 
     def fake_api(method: str, path: str, tok: str, body: dict[str, Any] | None = None) -> Any:
-        if method == "GET":
-            assert path == "/repos/acme/web/pulls/7"
+        if path == "/repos/acme/web/pulls/7":
             return {"base": {"ref": "main", "sha": base},
                     "head": {"sha": head, "repo": {"full_name": "acme/web"}}}
+        if path == "/graphql":  # no earlier duhview threads
+            return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}}
+        if method == "GET":  # no earlier reviews
+            return []
         assert body is not None
         posted.append(body)
         return {"html_url": "https://github.com/acme/web/pull/7#pullrequestreview-1"}

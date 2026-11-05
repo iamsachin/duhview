@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from duhview.collect import Change, GitError, git, hunk_lines
-from duhview.types import Finding, ReviewResult
+from duhview.types import Finding, ReviewResult, Severity
 
 API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 MARKER = "<!-- duhview -->"  # lets later runs find their own reviews
@@ -134,36 +134,84 @@ def _reindent(code: str, original_first_line: str) -> str:
     return "\n".join(indent + line if line.strip() else "" for line in textwrap.dedent(code).splitlines())
 
 
-def _comment_body(f: Finding, original_first_line: str | None) -> str:
-    """`original_first_line` is given only when the whole range is visible, so a suggestion can apply."""
-    out = f"**[{f.severity}] {_safe(f.title)}** · {f.category}\n\n{_safe(f.explanation)}"
-    if original_first_line is not None and f.suggestion is not None:
-        out += "\n\n" + _suggestion(_reindent(f.suggestion, original_first_line))
+def _marker(**meta: Any) -> str:
+    return f"<!-- duhview:{json.dumps(meta, separators=(',', ':'))} -->"
+
+
+_MARKER_RE = re.compile(r"<!-- duhview:(\{.*?\}) -->")
+
+
+def _markers(body: str) -> list[dict[str, Any]]:
+    out = []
+    for m in _MARKER_RE.finditer(body or ""):
+        try:
+            out.append(json.loads(m.group(1)))
+        except json.JSONDecodeError:
+            continue
     return out
 
 
-def _summary(r: ReviewResult, inline: int, rest: list[Finding]) -> str:
-    verdict = "review incomplete" if r.incomplete else (f"{len(r.findings)} finding(s)" if r.findings else "no findings")
-    stats = (f"{inline} inline · model `{r.model}` · verifier `{r.verifier_model or 'off'}` · "
-             f"{r.units} review unit(s) · cost ${r.cost_usd:.4f}")
-    out = [MARKER, f"### duhview: {verdict}", "", stats]
+_BADGE = {Severity.critical: "🔴 Critical", Severity.major: "🟠 Major", Severity.minor: "🟡 Minor",
+          Severity.nitpick: "⚪ Nitpick", Severity.info: "🔵 Info"}
+
+
+def _heading(f: Finding) -> str:
+    tags = [f"**{_BADGE[f.severity]}**", str(f.category).capitalize()]
+    if f.source != "agent":
+        tags.append(f"found by {f.source.removeprefix('scanner:')}")
+    return " · ".join(tags)
+
+
+def _comment_body(f: Finding, original_first_line: str | None) -> str:
+    """`original_first_line` is given only when the whole range is visible, so a suggestion can apply."""
+    out = [_heading(f), "", f"**{_safe(f.title)}**", "", _safe(f.explanation)]
+    if original_first_line is not None and f.suggestion is not None:
+        out += ["", "<sub>Suggested fix (use <b>Commit suggestion</b> to apply):</sub>", "",
+                _suggestion(_reindent(f.suggestion, original_first_line))]
+    return "\n".join(out + ["", _marker(cat=str(f.category), sev=str(f.severity))])
+
+
+def _details(title: str, lines: list[str]) -> list[str]:
+    return ["", f"<details><summary>{title}</summary>", "", *lines, "", "</details>"]
+
+
+def _summary(r: ReviewResult, inline: int, rest: list[Finding], progress: str | None) -> str:
+    counts = {s: sum(f.severity == s for f in r.findings) for s in Severity}
+    if r.incomplete:
+        verdict = "⚠️ review incomplete"
+    elif not r.findings:
+        verdict = "✅ no issues found"
+    else:
+        verdict = f"{len(r.findings)} issue(s) found"
+    out = [MARKER, f"## duhview: {verdict}"]
+    if r.findings:
+        used = [s for s in Severity if counts[s]]
+        out += ["", "| " + " | ".join(_BADGE[s] for s in used) + " |", "|" + "---|" * len(used),
+                "| " + " | ".join(str(counts[s]) for s in used) + " |"]
+    if progress:
+        out += ["", progress]
+    where = f"{inline} inline comment(s)" + (f", {len(rest)} below" if rest else "")
+    verifier = f" + verifier `{r.verifier_model}`" if r.verifier_model else ""
+    out += ["", f"<sub>{where} · {r.units} review unit(s) · `{r.model}`{verifier} · ${r.cost_usd:.4f}</sub>"]
     if r.incomplete:
         out += ["", "**Not fully reviewed:**", *(f"- {_safe(i)}" for i in r.incomplete)]
     if rest:
-        out += ["", "**Findings outside the diff:**"]
-        out += [f"- **[{f.severity}]** `{f.file}:{f.start_line}` {_safe(f.title)}: {_safe(f.explanation)}"
-                for f in rest]
+        out += _details(f"Findings outside the diff ({len(rest)})", [
+            f"- {_heading(f)}: `{f.file}:{f.start_line}` **{_safe(f.title)}**  \n  {_safe(f.explanation)} "
+            + _marker(file=f.file, line=f.start_line, cat=str(f.category), sev=str(f.severity))
+            for f in rest])
     if r.notes:
-        out += ["", *(f"_{_safe(n)}_" for n in r.notes)]
+        out += _details("Notes", [f"- {_safe(n)}" for n in r.notes])
     return "\n".join(out)
 
 
-def build_review(r: ReviewResult, change: Change, inline: bool = True) -> dict[str, Any]:
+def build_review(r: ReviewResult, change: Change, inline: bool = True, findings: list[Finding] | None = None,
+                 progress: str | None = None) -> dict[str, Any]:
     """One COMMENT review: findings on lines shown in the diff become inline comments (with a
     one-click suggestion when the whole range is shown); the rest go in the summary."""
     comments: list[dict[str, Any]] = []
     rest: list[Finding] = []
-    for f in r.findings:
+    for f in r.findings if findings is None else findings:
         shown = hunk_lines(change.files.get(f.file, ""))[1]
         span = range(f.start_line, max(f.end_line, f.start_line) + 1)
         whole = all(line in shown for line in span)
@@ -177,16 +225,146 @@ def build_review(r: ReviewResult, change: Change, inline: bool = True) -> dict[s
         else:
             c["line"] = span[-1] if whole or f.end_line in shown else f.start_line
         comments.append(c)
-    return {"event": "COMMENT", "body": _summary(r, len(comments), rest), "comments": comments}
+    return {"event": "COMMENT", "body": _summary(r, len(comments), rest, progress), "comments": comments}
 
 
-def post_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str) -> str:
+def post_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str,
+                findings: list[Finding] | None = None, progress: str | None = None) -> str:
     """Post the review; if GitHub rejects an inline position, post everything in the summary instead."""
     path = f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/reviews"
     try:
-        resp = api("POST", path, tok, {"commit_id": pr.head_sha, **build_review(r, change)})
+        resp = api("POST", path, tok, {"commit_id": pr.head_sha, **build_review(r, change, True, findings, progress)})
     except GitHubError as e:
         if " 422 " not in str(e):
             raise
-        resp = api("POST", path, tok, {"commit_id": pr.head_sha, **build_review(r, change, inline=False)})
+        resp = api("POST", path, tok,
+                   {"commit_id": pr.head_sha, **build_review(r, change, False, findings, progress)})
     return str(resp.get("html_url", ""))
+
+
+# --- re-runs: post only what is new --------------------------------------------------------
+
+MATCH_LINES = 3  # how far a finding may drift from an earlier comment and still be "the same"
+
+
+@dataclass
+class Thread:
+    """An earlier inline comment by duhview, with its replies."""
+    id: str  # GraphQL node id, to resolve it
+    root_id: int  # REST id of the first comment, to reply to it
+    path: str
+    line: int | None  # current line, or the original one when the code there changed
+    category: str
+    severity: Severity  # most severe recorded in the thread
+    resolved: bool
+    outdated: bool  # GitHub: the code under the comment changed since it was posted
+
+
+@dataclass
+class Listed:
+    """A finding listed in an earlier summary (it had no line in the diff to comment on)."""
+    path: str
+    line: int
+    category: str
+
+
+@dataclass
+class SyncPlan:
+    new: list[Finding]
+    worse: list[tuple[Thread, Finding]]
+    fixed: list[Thread]
+    open: int  # earlier threads still open after this run
+
+
+def _same(path: str, line: int | None, category: str, f: Finding) -> bool:
+    return (path == f.file and category == f.category and line is not None
+            and f.start_line - MATCH_LINES <= line <= f.end_line + MATCH_LINES)
+
+
+def plan_sync(r: ReviewResult, change: Change, threads: list[Thread], listed: list[Listed]) -> SyncPlan:
+    """Decide what to post on a re-run. Threads a person resolved are left alone. A thread is only
+    called fixed when the finding is gone AND the code under it changed (or left the diff), so a
+    model simply not repeating itself never closes a real issue; and never on an incomplete run."""
+    used: set[str] = set()
+    new: list[Finding] = []
+    worse: list[tuple[Thread, Finding]] = []
+    for f in r.findings:
+        t = next((t for t in threads if t.id not in used and _same(t.path, t.line, t.category, f)), None)
+        if t is not None:
+            used.add(t.id)
+            if not t.resolved and f.severity.rank < t.severity.rank:
+                worse.append((t, f))
+        elif not any(_same(x.path, x.line, x.category, f) for x in listed):
+            new.append(f)
+    unresolved = [t for t in threads if not t.resolved]
+    fixed = [] if r.incomplete else [t for t in unresolved
+                                     if t.id not in used and (t.outdated or t.path not in change.files)]
+    return SyncPlan(new, worse, fixed, len(unresolved) - len(fixed))
+
+
+_THREADS_QUERY = """
+query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes { id isResolved isOutdated path line originalLine
+                comments(first: 50) { nodes { databaseId body } } }
+      }
+    }
+  }
+}"""
+
+
+def _graphql(query: str, variables: dict[str, Any], tok: str) -> Any:
+    resp = api("POST", "/graphql", tok, {"query": query, "variables": variables})
+    if resp.get("errors"):
+        raise GitHubError(f"GitHub GraphQL: {resp['errors'][0].get('message')}")
+    return resp["data"]
+
+
+def existing_threads(pr: PullRequest, tok: str) -> list[Thread]:
+    # shortcut: reads the first 100 threads; paginate if PRs ever carry more review threads.
+    data = _graphql(_THREADS_QUERY, {"owner": pr.owner, "repo": pr.repo, "number": pr.number}, tok)
+    threads = []
+    for n in data["repository"]["pullRequest"]["reviewThreads"]["nodes"]:
+        comments = n["comments"]["nodes"]
+        if not comments or not (root := _markers(comments[0]["body"])):
+            continue  # not started by duhview
+        sevs = [Severity(m["sev"]) for c in comments for m in _markers(c["body"]) if m.get("sev") in Severity]
+        threads.append(Thread(n["id"], comments[0]["databaseId"], n["path"], n["line"] or n["originalLine"],
+                              root[0].get("cat", ""), min(sevs, key=lambda s: s.rank), n["isResolved"],
+                              n["isOutdated"]))
+    return threads
+
+
+def listed_findings(pr: PullRequest, tok: str) -> list[Listed]:
+    reviews = api("GET", f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/reviews?per_page=100", tok)
+    return [Listed(m["file"], m["line"], m.get("cat", "")) for rv in reviews if MARKER in (rv.get("body") or "")
+            for m in _markers(rv["body"]) if "file" in m and "line" in m]
+
+
+def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str) -> str:
+    """Post new findings, reply on threads that got worse, resolve threads that were fixed."""
+    plan = plan_sync(r, change, existing_threads(pr, tok), listed_findings(pr, tok))
+    done: list[str] = []
+    replies = f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/comments"
+    for t, f in plan.worse:
+        body = (f"⬆️ **Now [{f.severity}]** (was {t.severity}): {_safe(f.title)}\n\n{_safe(f.explanation)}\n\n"
+                + _marker(cat=str(f.category), sev=str(f.severity)))
+        api("POST", f"{replies}/{t.root_id}/replies", tok, {"body": body})
+    if plan.worse:
+        done.append(f"{len(plan.worse)} got worse (replied)")
+    for t in plan.fixed:
+        api("POST", f"{replies}/{t.root_id}/replies", tok,
+            {"body": f"✅ No longer found, and this code changed in `{pr.head_sha[:7]}`. Resolving."})
+        _graphql("mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id } } }",
+                 {"id": t.id}, tok)
+    if plan.fixed:
+        done.append(f"{len(plan.fixed)} fixed (resolved)")
+    if plan.new:
+        progress = f"{len(plan.new)} new · {plan.open} still open from earlier · {len(plan.fixed)} fixed" \
+            if plan.open or plan.fixed else None
+        done.insert(0, f"posted {len(plan.new)} new finding(s): {post_review(pr, r, change, tok, plan.new, progress)}")
+    else:
+        done.insert(0, f"nothing new to post ({plan.open} earlier finding(s) still open)")
+    return "; ".join(done)
