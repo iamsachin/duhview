@@ -257,7 +257,9 @@ class Thread:
     category: str
     severity: Severity  # most severe recorded in the thread
     resolved: bool
-    outdated: bool  # GitHub: the code under the comment changed since it was posted
+    outdated: bool  # GitHub: the commented lines themselves changed
+    commit: str = ""  # commit the comment was posted on
+    touched: bool = False  # code within MATCH_LINES of the comment changed since `commit`
 
 
 @dataclass
@@ -297,8 +299,8 @@ def plan_sync(r: ReviewResult, change: Change, threads: list[Thread], listed: li
         elif not any(_same(x.path, x.line, x.category, f) for x in listed):
             new.append(f)
     unresolved = [t for t in threads if not t.resolved]
-    fixed = [] if r.incomplete else [t for t in unresolved
-                                     if t.id not in used and (t.outdated or t.path not in change.files)]
+    fixed = [] if r.incomplete else [t for t in unresolved if t.id not in used
+                                     and (t.outdated or t.touched or t.path not in change.files)]
     return SyncPlan(new, worse, fixed, len(unresolved) - len(fixed))
 
 
@@ -308,7 +310,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
     pullRequest(number: $number) {
       reviewThreads(first: 100) {
         nodes { id isResolved isOutdated path line originalLine
-                comments(first: 50) { nodes { databaseId body } } }
+                comments(first: 50) { nodes { databaseId body originalCommit { oid } } } }
       }
     }
   }
@@ -333,8 +335,21 @@ def existing_threads(pr: PullRequest, tok: str) -> list[Thread]:
         sevs = [Severity(m["sev"]) for c in comments for m in _markers(c["body"]) if m.get("sev") in Severity]
         threads.append(Thread(n["id"], comments[0]["databaseId"], n["path"], n["line"] or n["originalLine"],
                               root[0].get("cat", ""), min(sevs, key=lambda s: s.rank), n["isResolved"],
-                              n["isOutdated"]))
+                              n["isOutdated"], (comments[0].get("originalCommit") or {}).get("oid", "")))
     return threads
+
+
+def mark_touched(root: Path, head: str, threads: list[Thread]) -> None:
+    """A fix often adds lines next to the flagged one (a guard above it) without editing it, which
+    GitHub does not count as outdated. Check the diff since the comment's commit around its line."""
+    for t in threads:
+        if t.resolved or t.outdated or t.line is None or not t.commit:
+            continue
+        try:
+            added = hunk_lines(git(root, "diff", t.commit, head, "--", t.path))[0]
+        except GitError:
+            continue  # commit not available: stay conservative, leave the thread open
+        t.touched = any(abs(line - t.line) <= MATCH_LINES for line in added)
 
 
 def listed_findings(pr: PullRequest, tok: str) -> list[Listed]:
@@ -343,9 +358,12 @@ def listed_findings(pr: PullRequest, tok: str) -> list[Listed]:
             for m in _markers(rv["body"]) if "file" in m and "line" in m]
 
 
-def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str) -> str:
-    """Post new findings, reply on threads that got worse, resolve threads that were fixed."""
-    plan = plan_sync(r, change, existing_threads(pr, tok), listed_findings(pr, tok))
+def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root: Path) -> str:
+    """Post new findings, reply on threads that got worse, resolve threads that were fixed.
+    `root` is a checkout containing the PR's commits."""
+    threads = existing_threads(pr, tok)
+    mark_touched(root, pr.head_sha, threads)
+    plan = plan_sync(r, change, threads, listed_findings(pr, tok))
     done: list[str] = []
     replies = f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/comments"
     for t, f in plan.worse:

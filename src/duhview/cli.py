@@ -85,7 +85,7 @@ def review(
             shutil.copyfile(reports["sarif"], sarif)
         if post and pull:
             try:
-                typer.echo(f"duhview: {github.sync_review(pull, result, change, tok)}", err=True)
+                typer.echo(f"duhview: {github.sync_review(pull, result, change, tok, review_root)}", err=True)
             except GitHubError as e:
                 typer.echo(receipt(result, str(reports["md"])))
                 _fail(f"review finished but posting failed: {e}")

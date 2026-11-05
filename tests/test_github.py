@@ -137,6 +137,24 @@ def test_plan_fixed_only_when_code_changed_and_review_complete() -> None:
     assert github.plan_sync(incomplete, CHANGE, [gone_changed], []).fixed == []
 
 
+def test_fix_that_adds_lines_next_to_the_flagged_line_counts_as_touched(repo: Path) -> None:
+    """Seen live: a guard added above the flagged line moved it without editing it, so GitHub did
+    not mark the thread outdated and the fixed issue stayed open."""
+    (repo / "src" / "app.py").write_text("def last(xs, n):\n    return xs[-n:]\n\n\n\n\n\ndef other():\n    pass\n")
+    _git(repo, "commit", "-qam", "v1")
+    v1 = _git(repo, "rev-parse", "HEAD")
+    (repo / "src" / "app.py").write_text("def last(xs, n):\n    if n <= 0:\n        return []\n    return xs[-n:]\n"
+                                         "\n\n\n\ndef other():\n    pass\n")
+    _git(repo, "commit", "-qam", "v2")
+    head = _git(repo, "rev-parse", "HEAD")
+    near = github.Thread("N", 1, "src/app.py", 4, "bug", Severity.minor, False, False, v1)  # moved 2 -> 4
+    far = github.Thread("F", 2, "src/app.py", 10, "bug", Severity.minor, False, False, v1)  # untouched code
+    github.mark_touched(repo, head, [near, far])
+    assert near.touched and not far.touched
+    plan = github.plan_sync(_result(), Change("PR", {"src/app.py": "x"}), [near, far], [])
+    assert [t.id for t in plan.fixed] == ["N"]
+
+
 def test_plan_respects_human_resolved_threads_and_listed_findings() -> None:
     f = _sev(_f(11, 11), "critical")
     plan = github.plan_sync(_result(f), CHANGE, [_t(11, resolved=True)], [])
@@ -171,8 +189,9 @@ def test_sync_rerun_posts_nothing_new_but_resolves_fixed(monkeypatch: pytest.Mon
     monkeypatch.setattr(github, "existing_threads", lambda pr, tok: threads)
     monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
     monkeypatch.setattr(github, "api", lambda m, p, t, b=None: calls.append((m, p)) or {"data": {}})
+    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
-    msg = github.sync_review(pr, _result(_f(20, 20)), CHANGE, "tok")
+    msg = github.sync_review(pr, _result(_f(20, 20)), CHANGE, "tok", Path("."))
     assert "nothing new to post" in msg and "1 fixed" in msg
     assert ("POST", "/repos/o/r/pulls/1/comments/100/replies") in calls  # "fixed" reply
     assert ("POST", "/graphql") in calls  # resolve
