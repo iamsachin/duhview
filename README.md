@@ -25,6 +25,7 @@ duhview review --spec docs/feature.md   # also check against requirements
 duhview review --json                # machine-readable output
 duhview review --sarif out.sarif     # also write SARIF (GitHub code scanning, CI tools)
 duhview review --offline             # skip scanners that need the network
+duhview review --pr 42 --post        # review a GitHub PR and post the result on it
 ```
 
 Default model: `claude-sonnet-5-5`. Only Anthropic and OpenAI models are supported.
@@ -48,6 +49,46 @@ and SARIF) in `.duhview/runs/`, which ignores itself in git.
    and report what it has found as it nears its share.
 4. **Verify** (optional): each agent finding is re-checked in a fresh context.
 
+
+## Pull requests and GitHub Actions
+
+`duhview review --pr <url or number>` checks the pull request out into a temporary git worktree
+(your own checkout is not touched) and reviews it against its base. `--post` publishes one
+review on the PR: findings on lines shown in the diff become inline comments, with a one-click
+suggestion when the fix is a direct replacement; the rest go in the summary. The review is
+always a plain comment; it never blocks merging by itself. The token comes from `GITHUB_TOKEN`,
+`GH_TOKEN` or `gh auth`.
+
+In PR mode, `.duhview/config.yaml`, `.duhview/rules.md` and `.duhview/fp-filter.md` are read
+from the **base branch**, so a pull request cannot weaken its own review. Changes it makes to
+those files are reviewed like any other change.
+
+To review every pull request automatically, add your model API key as a repository secret
+(`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) and this workflow:
+
+```yaml
+name: duhview
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: iamsachin/duhview@main
+        # with:
+        #   model: gpt-5.5   # optional; defaults to the base branch's config
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+The job fails when a finding reaches `block_on_severity` (or the review is incomplete), so you
+can make it a required check with branch protection. Pull requests from forks are skipped:
+GitHub does not give them secrets, and running untrusted code with secrets is unsafe.
 
 ## Configuration
 

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -47,8 +48,11 @@ class Config(_Strict):
     offline: bool = False  # skip scanners that need the network
 
 
-def load_config(root: Path) -> Config:
-    path = root / CONFIG_PATH
-    if not path.exists():
-        return Config()
-    return Config.model_validate(yaml.safe_load(path.read_text()) or {})
+def load_config(root: Path, read: Callable[[str], str | None] | None = None) -> Config:
+    """`read` overrides where the file comes from, e.g. a PR's base commit."""
+    if read is not None:
+        text = read(CONFIG_PATH)
+    else:
+        path = root / CONFIG_PATH
+        text = path.read_text() if path.exists() else None
+    return Config.model_validate(yaml.safe_load(text) or {}) if text else Config()

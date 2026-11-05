@@ -1,0 +1,46 @@
+name: duhview
+description: Agentic code review for pull requests. Posts one review with inline comments.
+branding:
+  icon: eye
+  color: purple
+
+inputs:
+  model:
+    description: Model name. Defaults to model.name in the base branch's .duhview/config.yaml.
+    required: false
+    default: ""
+  github-token:
+    description: Token used to read the pull request and post the review.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    # Fork PRs get no secrets on `pull_request`, and running fork code with secrets is unsafe.
+    - name: Skip unsupported events
+      if: github.event.pull_request.head.repo.full_name != github.repository
+      shell: bash
+      run: |
+        echo "::notice::duhview skipped: it reviews pull requests from branches of this repository only (not forks)."
+
+    - if: github.event.pull_request.head.repo.full_name == github.repository
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - if: github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      run: pip install --quiet "$ACTION_PATH"
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+
+    - name: Review
+      if: github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      # Inputs go through env, never interpolated into the script.
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        DUHVIEW_MODEL: ${{ inputs.model }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: duhview review --pr "$PR_NUMBER" --post ${DUHVIEW_MODEL:+--model "$DUHVIEW_MODEL"}

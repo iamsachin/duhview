@@ -9,7 +9,7 @@ from typing import Any
 from duhview import model as llm
 from duhview.agent import ask_json
 from duhview.archive import Archive
-from duhview.collect import Change, project_context, review_units
+from duhview.collect import Change, Reader, project_context, review_units
 from duhview.config import Config
 from duhview.scan import run_scanners
 from duhview.tools import RepoTools
@@ -59,10 +59,12 @@ def _label(unit: dict[str, str]) -> str:
 
 
 async def run_review(root: Path, change: Change, cfg: Config, finder_model: str, verifier_model: str | None,
-                     spec: Path | None, offline: bool = False) -> ReviewResult:
-    """`verifier_model=None` skips the verify pass."""
+                     spec: Path | None, offline: bool = False, read_trusted: Reader | None = None,
+                     archive_root: Path | None = None) -> ReviewResult:
+    """`verifier_model=None` skips the verify pass. `read_trusted` supplies team rules and the
+    false-positive filter (the PR base in PR mode); `archive_root` is where runs are saved."""
     budget = llm.Budget(cfg.budget.max_usd_per_review)
-    archive = Archive(root)
+    archive = Archive(archive_root or root)
     tools = RepoTools(root)
     log: list[Any] = []
     incomplete = [f"{f}: diff too large, only the first part was reviewed" for f in change.truncated]
@@ -72,7 +74,7 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
     notes, incomplete = scan.notes, incomplete + scan.incomplete
     scanner_findings = [Finding.from_draft(d, source=f"scanner:{name}") for name, d in scan.findings]
 
-    context = project_context(root, cfg, list(change.files), spec)
+    context = project_context(root, cfg, list(change.files), spec, read_trusted)
     ctx = _fence("project_context", context) + "\n\n" if context else ""
     finder_sys, max_calls, timeout = _prompt("finder"), cfg.budget.max_tool_calls_per_agent, cfg.budget.agent_timeout_s
 

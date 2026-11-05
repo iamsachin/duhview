@@ -2,14 +2,18 @@
 
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
 from duhview.config import Config
 
-CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md", ".duhview/rules.md"]
-FP_FILTER_FILE = ".duhview/fp-filter.md"
+CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md"]  # read from the code under review
+RULES_FILE = ".duhview/rules.md"  # trusted: in PR mode read from the base branch
+FP_FILTER_FILE = ".duhview/fp-filter.md"  # trusted: in PR mode read from the base branch
+
+Reader = Callable[[str], str | None]  # repo-relative path -> contents, or None if missing
 MAX_CONTEXT_CHARS = 20_000
 MAX_FILE_DIFF_CHARS = 60_000  # one file's diff beyond this is cut off
 UNIT_MAX_CHARS = 60_000  # files are packed into review units up to this size
@@ -122,21 +126,28 @@ def review_units(change: Change) -> list[dict[str, str]]:
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
-def added_lines(file_diff: str) -> set[int]:
-    """Line numbers in the new file that this diff adds or changes."""
-    lines: set[int] = set()
+def hunk_lines(file_diff: str) -> tuple[set[int], set[int]]:
+    """(lines the diff adds, all new-file lines shown in the diff). GitHub only accepts review
+    comments on the second set."""
+    added: set[int] = set()
+    shown: set[int] = set()
     new: int | None = None
     for line in file_diff.splitlines():
         if m := _HUNK.match(line):
             new = int(m.group(1))
         elif new is None or line.startswith("\\"):  # before the first hunk, or "\ No newline"
             continue
-        elif line.startswith("+"):
-            lines.add(new)
-            new += 1
         elif not line.startswith("-"):
-            new += 1  # context line
-    return lines
+            if line.startswith("+"):
+                added.add(new)
+            shown.add(new)
+            new += 1
+    return added, shown
+
+
+def added_lines(file_diff: str) -> set[int]:
+    """Line numbers in the new file that this diff adds or changes."""
+    return hunk_lines(file_diff)[0]
 
 
 def _repo_file(root: Path, name: str) -> str | None:
@@ -146,15 +157,33 @@ def _repo_file(root: Path, name: str) -> str | None:
     return None
 
 
-def project_context(root: Path, cfg: Config, changed: list[str], spec: Path | None) -> str:
+def worktree_reader(root: Path) -> Reader:
+    return lambda name: _repo_file(root, name)
+
+
+def revision_reader(root: Path, rev: str) -> Reader:
+    """Read files as they are at `rev`, e.g. a PR's base commit, regardless of what is checked out."""
+    def read(name: str) -> str | None:
+        try:
+            return git(root, "show", f"{rev}:{name}")[:MAX_CONTEXT_CHARS]
+        except GitError:  # not present at that revision
+            return None
+    return read
+
+
+def project_context(root: Path, cfg: Config, changed: list[str], spec: Path | None,
+                    read_trusted: Reader | None = None) -> str:
+    read_trusted = read_trusted or worktree_reader(root)
     parts = []
     for name in CONTEXT_FILES:
         if (text := _repo_file(root, name)) is not None:
             parts.append(f"## {name}\n{text}")
+    if (team := read_trusted(RULES_FILE)) is not None:
+        parts.append(f"## {RULES_FILE}\n{team}")
     rules = [r.text for r in cfg.rules if not r.paths or any(fnmatch(f, g) for f in changed for g in r.paths)]
     if rules:
         parts.append("## Team rules\n" + "\n".join(f"- {r}" for r in rules))
-    if (fp := _repo_file(root, FP_FILTER_FILE)) is not None:
+    if (fp := read_trusted(FP_FILTER_FILE)) is not None:
         parts.append(f"## Do not report (team false-positive filter)\n{fp}")
     if spec:
         parts.append(f"## Requirements / spec ({spec.name})\n{spec.read_text(errors='replace')[:MAX_CONTEXT_CHARS]}")
