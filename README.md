@@ -81,10 +81,14 @@ jobs:
           fetch-depth: 0
       - uses: iamsachin/duhview@main
         # with:
-        #   model: gpt-5.5   # optional; defaults to the base branch's config
+        #   model: gpt-5.5     # optional; defaults to the base branch's config
+        #   scanners: "false" # skip installing gitleaks and semgrep (on by default)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
+
+The Action installs [gitleaks](https://github.com/gitleaks/gitleaks) (pinned version, checksum
+verified) and [semgrep](https://semgrep.dev) before reviewing; this adds about a minute.
 
 The job fails when a finding reaches `block_on_severity` (or the review is incomplete), so you
 can make it a required check with branch protection. Pull requests from forks are skipped:

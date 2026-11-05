@@ -13,6 +13,10 @@ inputs:
     description: Token used to read the pull request and post the review.
     required: false
     default: ${{ github.token }}
+  scanners:
+    description: Install and run gitleaks and semgrep before the agent ("true" or "false").
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -34,6 +38,29 @@ runs:
       run: pip install --quiet "$ACTION_PATH"
       env:
         ACTION_PATH: ${{ github.action_path }}
+
+    # Optional: if this fails, the review still runs and reports the scanners as skipped.
+    - name: Install scanners (gitleaks, semgrep)
+      if: github.event.pull_request.head.repo.full_name == github.repository && inputs.scanners == 'true'
+      continue-on-error: true
+      shell: bash
+      run: |
+        set -euo pipefail
+        pip install --quiet semgrep
+        # Pinned version and SHA-256 from the official release, so a changed download is rejected.
+        version=8.30.1
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64)   arch=linux_x64;   sha=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
+          Linux-ARM64) arch=linux_arm64; sha=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 ;;
+          *) echo "::notice::gitleaks not installed: no pinned build for $RUNNER_OS/$RUNNER_ARCH"; exit 0 ;;
+        esac
+        dir="$RUNNER_TEMP/gitleaks"
+        mkdir -p "$dir"
+        file="$dir/gitleaks.tar.gz"
+        curl -sSfL -o "$file" "https://github.com/gitleaks/gitleaks/releases/download/v$version/gitleaks_${version}_${arch}.tar.gz"
+        echo "$sha  $file" | sha256sum -c -
+        tar -xzf "$file" -C "$dir" gitleaks
+        echo "$dir" >> "$GITHUB_PATH"
 
     - name: Review
       if: github.event.pull_request.head.repo.full_name == github.repository
