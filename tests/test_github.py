@@ -227,6 +227,26 @@ def test_sync_survives_failed_thread_updates_and_never_repeats_the_fixed_note(
     assert sum(p.endswith("/replies") for _, p in calls) == 1  # only the thread not yet told
 
 
+def test_without_resolve_it_notes_fixed_and_skips_the_resolve_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    bodies: list[str] = []
+    calls: list[str] = []
+
+    def fake_api(m: str, p: str, t: str, b: dict[str, Any] | None = None) -> Any:
+        calls.append(p)
+        if b and "body" in b:
+            bodies.append(b["body"])
+        return {}
+
+    monkeypatch.setattr(github, "existing_threads", lambda pr, tok: [_t(11, outdated=True)])
+    monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
+    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
+    monkeypatch.setattr(github, "api", fake_api)
+    pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
+    msg = github.sync_review(pr, _result(), CHANGE, "tok", Path("."), resolve=False)
+    assert "1 fixed (noted)" in msg and "/graphql" not in calls and "warning" not in msg
+    assert "Resolve this thread if you agree." in bodies[0]
+
+
 # --- end to end: --pr --post against a local "origin" ---------------------------------------
 
 

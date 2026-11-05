@@ -366,9 +366,11 @@ def listed_findings(pr: PullRequest, tok: str) -> list[Listed]:
             for m in _markers(rv["body"]) if "file" in m and "line" in m]
 
 
-def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root: Path) -> str:
-    """Post new findings, reply on threads that got worse, resolve threads that were fixed.
-    `root` is a checkout containing the PR's commits."""
+def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root: Path,
+                resolve: bool = True) -> str:
+    """Post new findings, reply on threads that got worse, note (and, if `resolve`, resolve) threads
+    that were fixed. `root` is a checkout containing the PR's commits. The default Actions token
+    cannot resolve threads, so the Action passes resolve=False and leaves that click to a person."""
     threads = existing_threads(pr, tok)
     mark_touched(root, pr.head_sha, threads)
     plan = plan_sync(r, change, threads, listed_findings(pr, tok))
@@ -400,13 +402,15 @@ def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root
     resolved = 0
     for t in plan.fixed:
         if not t.fixed_noted:  # never say it twice, e.g. when resolving failed last time
-            note = f"✅ No longer found, and this code changed in `{pr.head_sha[:7]}`.\n\n{_marker(fixed=True)}"
+            ask = "" if resolve else " Resolve this thread if you agree."
+            note = f"✅ No longer found, and this code changed in `{pr.head_sha[:7]}`.{ask}\n\n{_marker(fixed=True)}"
             attempt("reply", api, "POST", f"{replies}/{t.root_id}/replies", tok, {"body": note})
-        resolved += attempt("resolve thread", _graphql, _RESOLVE, {"id": t.id}, tok)
+        if resolve:
+            resolved += attempt("resolve thread", _graphql, _RESOLVE, {"id": t.id}, tok)
     if worse:
         done.append(f"{worse} got worse (replied)")
     if plan.fixed:
-        done.append(f"{len(plan.fixed)} fixed ({resolved} resolved)")
+        done.append(f"{len(plan.fixed)} fixed ({resolved} resolved)" if resolve else f"{len(plan.fixed)} fixed (noted)")
     if failed:
         hint = (" (the token may not be allowed to resolve review threads)"
                 if any("not accessible" in f for f in failed) else "")

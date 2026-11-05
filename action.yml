@@ -74,4 +74,6 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         DUHVIEW_MODEL: ${{ inputs.model }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
-      run: duhview review --pr "$PR_NUMBER" --post ${DUHVIEW_MODEL:+--model "$DUHVIEW_MODEL"}
+        # The default token cannot resolve review threads; a token you pass in may.
+        DUHVIEW_RESOLVE: ${{ inputs.github-token != github.token && '--resolve' || '--no-resolve' }}
+      run: duhview review --pr "$PR_NUMBER" --post "$DUHVIEW_RESOLVE" ${DUHVIEW_MODEL:+--model "$DUHVIEW_MODEL"}

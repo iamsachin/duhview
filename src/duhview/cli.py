@@ -35,6 +35,7 @@ def review(
     commit: Annotated[str | None, typer.Option(help="Review a single commit.")] = None,
     pr: Annotated[str | None, typer.Option(help="Review a GitHub pull request (URL or number).")] = None,
     post: Annotated[bool, typer.Option("--post", help="Post the result as a review on the --pr.")] = False,
+    resolve: Annotated[bool, typer.Option(help="With --post, resolve threads whose finding was fixed.")] = True,
     model: Annotated[str | None, typer.Option(help="Model name, e.g. claude-sonnet-5-5 or gpt-5.5.")] = None,
     verifier_model: Annotated[str | None, typer.Option(help="Enable the verify pass with this model.")] = None,
     spec: Annotated[Path | None, typer.Option(exists=True, dir_okay=False, help="Requirements to check against.")] = None,
@@ -85,7 +86,7 @@ def review(
             shutil.copyfile(reports["sarif"], sarif)
         if post and pull:
             try:
-                typer.echo(f"duhview: {github.sync_review(pull, result, change, tok, review_root)}", err=True)
+                typer.echo(f"duhview: {github.sync_review(pull, result, change, tok, review_root, resolve)}", err=True)
             except GitHubError as e:
                 typer.echo(receipt(result, str(reports["md"])))
                 _fail(f"review finished but posting failed: {e}")
