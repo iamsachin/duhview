@@ -48,9 +48,9 @@ def _dedupe(drafts: list[FindingDraft]) -> list[FindingDraft]:
     return kept
 
 
-async def run_review(root: Path, change: Change, cfg: Config, finder_model: str, verifier_model: str,
-                     spec: Path | None, verify: bool = True) -> ReviewResult:
-    """`verify=False` skips the verifier; used by the benchmark to measure what it adds."""
+async def run_review(root: Path, change: Change, cfg: Config, finder_model: str, verifier_model: str | None,
+                     spec: Path | None) -> ReviewResult:
+    """`verifier_model=None` skips the verify pass."""
     budget = llm.Budget(cfg.budget.max_usd_per_review)
     archive = Archive(root)
     tools = RepoTools(root)
@@ -89,12 +89,13 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
     async def check(d: FindingDraft) -> Finding | None:
         nonlocal unverified
         f = Finding.from_draft(d)
-        if not verify:
+        if verifier_model is None:
             return f
+        vm = verifier_model
         user = base + "\n\n" + _fence("finding", d.model_dump_json(indent=2))
         async with sem:
             try:
-                v = await _retry_once(lambda: ask_json(verifier_model, _prompt("verifier"), user, Verdict, tools,
+                v = await _retry_once(lambda: ask_json(vm, _prompt("verifier"), user, Verdict, tools,
                                                        budget, VERIFY_MAX_TOOL_CALLS, log),
                                       cfg.budget.agent_timeout_s)
             except Exception:  # noqa: BLE001 - keep the finding, marked unverified

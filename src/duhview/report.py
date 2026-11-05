@@ -17,7 +17,7 @@ def _cost(r: ReviewResult) -> str:
 
 def to_markdown(r: ReviewResult) -> str:
     out = [f"# duhview review: {r.target}", "",
-           f"Model: `{r.model}` · Verifier: `{r.verifier_model}` · Cost: {_cost(r)}", ""]
+           f"Model: `{r.model}` · Verifier: `{r.verifier_model or 'off'}` · Cost: {_cost(r)}", ""]
     if r.incomplete:
         out += ["## ⚠️ Review incomplete", *(f"- {i}" for i in r.incomplete), ""]
     if not r.findings:

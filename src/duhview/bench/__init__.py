@@ -110,24 +110,24 @@ def score(case: Case, findings: list[Finding]) -> tuple[list[str], int]:
     return sorted(caught), true
 
 
-async def run_case(case: Case, finder: str, verifier: str, verify: bool) -> Score:
+async def run_case(case: Case, finder: str, verifier: str | None) -> Score:
     with tempfile.TemporaryDirectory(prefix=f"duhview-{case.name}-") as tmp:
         root = Path(tmp).resolve()
         build_repo(case, root)
         cfg = Config()
-        result = await run_review(root, get_change(root, Target(), cfg), cfg, finder, verifier, None, verify=verify)
+        result = await run_review(root, get_change(root, Target(), cfg), cfg, finder, verifier, None)
     caught, true = score(case, result.findings)
     return Score(case.name, len(case.spec.bugs), caught, len(result.findings), true, result.cost_usd,
                  result.incomplete)
 
 
-async def run_bench(cases: list[Case], finder: str, verifier: str, verify: bool = True,
+async def run_bench(cases: list[Case], finder: str, verifier: str | None,
                     concurrency: int = 4) -> list[Score]:
     sem = asyncio.Semaphore(concurrency)
 
     async def one(c: Case) -> Score:
         async with sem:
-            return await run_case(c, finder, verifier, verify)
+            return await run_case(c, finder, verifier)
 
     return list(await asyncio.gather(*(one(c) for c in cases)))
 

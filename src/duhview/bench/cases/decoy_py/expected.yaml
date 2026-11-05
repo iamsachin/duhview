@@ -1,0 +1,2 @@
+description: Code that looks risky but is correct (constant shell command, guarded slicing and division, log-and-reraise). Any finding is a false positive.
+bugs: []

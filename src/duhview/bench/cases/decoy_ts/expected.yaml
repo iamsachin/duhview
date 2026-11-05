@@ -1,0 +1,2 @@
+description: Code that looks risky but is correct (innerHTML from a constant map, intentional == null, fetch with abort signal). Any finding is a false positive.
+bugs: []

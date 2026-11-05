@@ -44,5 +44,8 @@ When done, reply with only this JSON object (no other text):
   "severity": "critical|major|minor|nitpick|info",
   "category": "bug|security|performance|reliability|maintainability|requirements",
   "title": "one line", "explanation": "why it is wrong, with a concrete failing scenario",
-  "suggestion": "replacement code for those lines, or null"}]}
+  "suggestion": "replacement code for exactly start_line..end_line, or null"}]}
+`suggestion` must be literal source code that can replace those lines as-is, never prose or
+advice. If the fix spans other lines or is not a simple replacement, describe it in
+`explanation` and set `suggestion` to null.
 Return {"findings": []} if you found nothing worth reporting.

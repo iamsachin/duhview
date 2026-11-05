@@ -76,9 +76,9 @@ def test_context_file_symlinked_outside_repo_is_ignored(repo: Path, tmp_path: Pa
 # --- pipeline with a scripted model ---------------------------------------------------------
 
 
-@pytest.mark.parametrize(("verify", "expected"), [(True, ["kept"]), (False, ["kept", "dropped"])])
+@pytest.mark.parametrize(("verifier", "expected"), [("m", ["kept"]), (None, ["kept", "dropped"])])
 def test_verifier_drops_rejected_findings(repo: Path, monkeypatch: pytest.MonkeyPatch,
-                                          verify: bool, expected: list[str]) -> None:
+                                          verifier: str | None, expected: list[str]) -> None:
     drafts = [{"file": "src/app.py", "start_line": 1, "end_line": 1, "severity": "major", "category": "bug",
                "title": t, "explanation": "e"} for t in ("kept", "dropped")]
     drafts[1]["start_line"] = drafts[1]["end_line"] = 2
@@ -93,7 +93,7 @@ def test_verifier_drops_rejected_findings(repo: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(model, "complete", fake_complete)
     (repo / "src" / "app.py").write_text("def add(a, b):\n    return a - b\n")
     cfg = Config()
-    result = asyncio.run(run_review(repo, get_change(repo, Target(), cfg), cfg, "m", "m", None, verify=verify))
+    result = asyncio.run(run_review(repo, get_change(repo, Target(), cfg), cfg, "m", verifier, None))
     assert sorted(f.title for f in result.findings) == sorted(expected)
-    assert all(f.verified == verify for f in result.findings)
+    assert all(f.verified == (verifier is not None) for f in result.findings)
     assert not result.incomplete

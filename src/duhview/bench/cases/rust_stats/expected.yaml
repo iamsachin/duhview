@@ -1,0 +1,7 @@
+description: One subtle panic among correct-looking guards (empty check, total_cmp, unwrap_or).
+bugs:
+  - id: percentile-index-out-of-bounds
+    category: bug
+    locations:
+      - {file: lib.rs, match: "let idx = (p / 100.0"}
+      - {file: lib.rs, match: "Some(sorted[idx])"}

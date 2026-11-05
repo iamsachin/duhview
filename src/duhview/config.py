@@ -14,7 +14,7 @@ class _Strict(BaseModel):
 
 class ModelCfg(_Strict):
     name: str = "claude-sonnet-5-5"
-    verifier: str | None = None
+    verifier: str | None = None  # set to enable the verify pass
 
 
 class ReviewCfg(_Strict):

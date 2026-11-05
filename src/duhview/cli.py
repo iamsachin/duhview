@@ -31,7 +31,7 @@ def review(
     branch: Annotated[str | None, typer.Option(help="Review BRANCH...HEAD.")] = None,
     commit: Annotated[str | None, typer.Option(help="Review a single commit.")] = None,
     model: Annotated[str | None, typer.Option(help="Model name, e.g. claude-sonnet-5-5 or gpt-5.5.")] = None,
-    verifier_model: Annotated[str | None, typer.Option(help="Model for the verify pass.")] = None,
+    verifier_model: Annotated[str | None, typer.Option(help="Enable the verify pass with this model.")] = None,
     spec: Annotated[Path | None, typer.Option(exists=True, dir_okay=False, help="Requirements to check against.")] = None,
     json_out: Annotated[bool, typer.Option("--json", help="Print the result as JSON.")] = False,
 ) -> None:
@@ -46,7 +46,8 @@ def review(
         root = repo_root(Path.cwd())
         cfg = load_config(root)
         finder = resolve_model(model or cfg.model.name)
-        verifier = resolve_model(verifier_model or cfg.model.verifier or model or cfg.model.name)
+        verifier_name = verifier_model or cfg.model.verifier
+        verifier = resolve_model(verifier_name) if verifier_name else None
         change = get_change(root, Target(staged, branch, commit), cfg)
     except (GitError, ModelError, ValueError) as e:
         typer.echo(f"error: {e}", err=True)
@@ -69,7 +70,7 @@ def review(
 def demo(
     case: Annotated[str, typer.Option(help="Case name, comma-separated names, or 'all'.")] = "py_cross_file",
     model: Annotated[str | None, typer.Option(help="Model name, e.g. claude-sonnet-5-5 or gpt-5.5.")] = None,
-    verifier_model: Annotated[str | None, typer.Option(help="Model for the verify pass.")] = None,
+    verifier_model: Annotated[str | None, typer.Option(help="Enable the verify pass with this model.")] = None,
 ) -> None:
     """Review built-in repos with planted bugs and show how many duhview caught."""
     from duhview.bench import load_cases, run_bench, table
@@ -78,7 +79,7 @@ def demo(
         cases = load_cases(None if case == "all" else case.split(","))
         name = model or Config().model.name
         finder = resolve_model(name)
-        verifier = resolve_model(verifier_model or name)
+        verifier = resolve_model(verifier_model) if verifier_model else None
     except (ModelError, ValueError) as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_ERROR) from e

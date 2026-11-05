@@ -66,7 +66,7 @@ class Finding(FindingDraft):
 class ReviewResult(BaseModel):
     target: str
     model: str
-    verifier_model: str
+    verifier_model: str | None
     findings: list[Finding]
     incomplete: list[str]
     cost_usd: float
