@@ -1,0 +1,14 @@
+description: Path check removed, pagination off by one, unbounded fetch of a user URL.
+bugs:
+  - id: path-traversal
+    category: security
+    locations:
+      - {file: files.py, match: "path = os.path.join(UPLOAD_DIR, name)"}
+  - id: page-off-by-one
+    category: bug
+    locations:
+      - {file: files.py, match: "start + size - 1"}
+  - id: ssrf-no-timeout
+    category: security
+    locations:
+      - {file: files.py, match: "urlopen(url)"}

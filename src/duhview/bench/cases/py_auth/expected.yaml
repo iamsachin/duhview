@@ -1,0 +1,11 @@
+description: Refactor drops the invoice ownership check and starts logging passwords.
+bugs:
+  - id: missing-ownership-check
+    category: security
+    locations:
+      - {file: api.py, match: "if invoice is None:"}
+      - {file: api.py, match: "return invoice"}
+  - id: password-logged
+    category: security
+    locations:
+      - {file: api.py, match: "password=%s"}

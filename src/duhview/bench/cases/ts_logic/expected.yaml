@@ -1,0 +1,14 @@
+description: Numeric sort loses its comparator; a new total() has two edge-case bugs.
+bugs:
+  - id: lexicographic-sort
+    category: bug
+    locations:
+      - {file: stats.ts, match: "[...values].sort();"}
+  - id: loop-off-by-one
+    category: bug
+    locations:
+      - {file: stats.ts, match: "i <= items.length"}
+  - id: zero-qty-becomes-one
+    category: bug
+    locations:
+      - {file: stats.ts, match: "items[i].qty || 1"}

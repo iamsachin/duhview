@@ -1,0 +1,14 @@
+description: Auth check loses its await, role check becomes an assignment, greeting becomes HTML.
+bugs:
+  - id: missing-await
+    category: security
+    locations:
+      - {file: routes.ts, match: "const ok = verifyToken(token);"}
+  - id: assignment-in-condition
+    category: security
+    locations:
+      - {file: routes.ts, match: 'if (user.role = "admin")'}
+  - id: xss-innerhtml
+    category: security
+    locations:
+      - {file: routes.ts, match: "el.innerHTML"}

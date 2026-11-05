@@ -1,0 +1,31 @@
+# Local planning notes
+FEATURES.md
+PLAN.md
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+*.log
+
+# duhview run archives (contain source code and model output)
+.duhview/runs/
+
+# Secrets and OS/editor files
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+*.swp
+Thumbs.db

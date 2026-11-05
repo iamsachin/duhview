@@ -1,0 +1,37 @@
+[project]
+name = "duhview"
+version = "0.1.0"
+description = "Agentic code review that catches the obvious-in-hindsight bugs before you push."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "litellm>=1.108",
+    "mcp>=2.3",  # litellm imports it for any tool-calling request but does not declare it
+    "pydantic>=2.14",
+    "pyyaml>=6.0",
+    "typer>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9", "ruff>=0.17", "mypy>=2.4", "types-PyYAML"]
+
+[project.scripts]
+duhview = "duhview.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 110
+# Benchmark fixtures contain deliberate bugs.
+extend-exclude = ["src/duhview/bench/cases"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+exclude = ["src/duhview/bench/cases/"]

@@ -1,0 +1,14 @@
+description: Cache gains tags and purging, with three classic Python mistakes.
+bugs:
+  - id: mutable-default-arg
+    category: bug
+    locations:
+      - {file: cache.py, match: "tags=[]"}
+  - id: ttl-comparison-reversed
+    category: bug
+    locations:
+      - {file: cache.py, match: "time.time() - ts < self.ttl"}
+  - id: dict-mutated-during-iteration
+    category: bug
+    locations:
+      - {file: cache.py, match: "for key in self.data:"}

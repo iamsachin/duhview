@@ -1,0 +1,15 @@
+description: A signature change breaks an untouched caller; thumbnails move to a shell string.
+bugs:
+  - id: caller-not-updated
+    category: bug
+    locations:
+      - {file: orders.py, match: "parse_price(line"}
+      - {file: money.py, match: "def parse_price(text, currency):"}
+  - id: shell-injection
+    category: security
+    locations:
+      - {file: thumbs.py, match: "shell=True"}
+  - id: error-swallowed
+    category: reliability
+    locations:
+      - {file: thumbs.py, match: "except Exception:"}
