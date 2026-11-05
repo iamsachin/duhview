@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]  # PR branches are covered by pull_request; avoid running twice
   pull_request:
 
 jobs:
