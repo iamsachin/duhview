@@ -38,6 +38,7 @@ class Bug(BaseModel):
 class CaseSpec(BaseModel):
     description: str
     bugs: list[Bug]
+    acceptable: list[Location] = []  # real issues we did not plant: not false positives, not counted in recall
 
 
 @dataclass
@@ -46,6 +47,7 @@ class Case:
     dir: Path
     spec: CaseSpec
     lines: dict[str, list[tuple[str, int]]]  # bug id -> (file, line) where it may be reported
+    acceptable: list[tuple[str, int]]
 
 
 @dataclass
@@ -64,21 +66,23 @@ def cases_dir() -> Path:
     return Path(str(files("duhview.bench").joinpath("cases")))
 
 
+def _resolve(case_dir: Path, loc: Location, what: str) -> tuple[str, int]:
+    """The one line in after/<file> containing loc.match."""
+    text = (case_dir / "after" / loc.file).read_text().splitlines()
+    hits = [i for i, line in enumerate(text, 1) if loc.match in line]
+    if len(hits) != 1:
+        raise ValueError(f"{case_dir.name}/{what}: '{loc.match}' matches {len(hits)} lines in {loc.file}")
+    return loc.file, hits[0]
+
+
 def load_cases(names: list[str] | None = None) -> list[Case]:
     cases = []
     for d in sorted(p for p in cases_dir().iterdir() if p.is_dir()):
         if names and d.name not in names:
             continue
         spec = CaseSpec.model_validate(yaml.safe_load((d / "expected.yaml").read_text()))
-        lines: dict[str, list[tuple[str, int]]] = {}
-        for bug in spec.bugs:
-            for loc in bug.locations:
-                text = (d / "after" / loc.file).read_text().splitlines()
-                hits = [i for i, line in enumerate(text, 1) if loc.match in line]
-                if len(hits) != 1:
-                    raise ValueError(f"{d.name}/{bug.id}: '{loc.match}' matches {len(hits)} lines in {loc.file}")
-                lines.setdefault(bug.id, []).append((loc.file, hits[0]))
-        cases.append(Case(d.name, d, spec, lines))
+        lines = {bug.id: [_resolve(d, loc, bug.id) for loc in bug.locations] for bug in spec.bugs}
+        cases.append(Case(d.name, d, spec, lines, [_resolve(d, loc, "acceptable") for loc in spec.acceptable]))
     if names and len(cases) != len(set(names)):
         known = sorted(p.name for p in cases_dir().iterdir() if p.is_dir())
         raise ValueError(f"unknown case in {names}; known: {', '.join(known)}")
@@ -98,14 +102,17 @@ def build_repo(case: Case, dest: Path) -> None:
 
 
 def score(case: Case, findings: list[Finding]) -> tuple[list[str], int]:
-    """Return (bug ids caught, number of findings that hit a planted bug)."""
+    """Return (bug ids caught, number of findings that are real: a planted bug or an acceptable one)."""
+
+    def near(f: Finding, locs: list[tuple[str, int]]) -> bool:
+        return any(file == f.file and f.start_line - LINE_TOLERANCE <= line <= f.end_line + LINE_TOLERANCE
+                   for file, line in locs)
+
     caught: set[str] = set()
     true = 0
     for f in findings:
-        hit = {bug_id for bug_id, locs in case.lines.items()
-               if any(file == f.file and f.start_line - LINE_TOLERANCE <= line <= f.end_line + LINE_TOLERANCE
-                      for file, line in locs)}
-        true += bool(hit)
+        hit = {bug_id for bug_id, locs in case.lines.items() if near(f, locs)}
+        true += bool(hit) or near(f, case.acceptable)
         caught |= hit
     return sorted(caught), true
 

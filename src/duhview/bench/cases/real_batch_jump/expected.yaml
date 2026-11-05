@@ -1,0 +1,7 @@
+description: Timeline now collapses runs of tasks into batch rows, but the jump lookup only matches top-level task rows, so jumping to any batched task returns -1. The collapse logic itself is correct.
+bugs:
+  - id: jump-misses-batched-tasks
+    category: bug
+    locations:
+      - {file: timeline.ts, match: "return rows.findIndex((e) => e.kind === 'task' && e.id === taskId);"}
+      - {file: page.ts, match: "const rows = collapseTasks(events);"}

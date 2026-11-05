@@ -1,0 +1,12 @@
+description: Startup backfill unwraps JSON parsing of inputs the schema documents as possibly invalid, so one bad row panics the app at every launch.
+bugs:
+  - id: unwrap-panics-on-bad-json
+    category: reliability
+    locations:
+      - {file: migrate.rs, match: "serde_json::from_str(&input).unwrap()"}
+acceptable:
+  # Found by a model, not planted: `input` is nullable, and reading it as String errors on NULL,
+  # which also aborts startup.
+  - {file: migrate.rs, match: "r.get::<_, String>(1)?"}
+  # Inserting into task_index while the SELECT on it is still being stepped, with no transaction.
+  - {file: migrate.rs, match: "let mut stmt = conn.prepare("}

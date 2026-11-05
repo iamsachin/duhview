@@ -1,0 +1,7 @@
+description: Refactor drops the ticking ref; a Vue computed does not track Date.now(), so the running timer never updates.
+bugs:
+  - id: computed-over-date-now
+    category: bug
+    locations:
+      - {file: useElapsed.ts, match: "const end = running.value ? Date.now()"}
+      - {file: useElapsed.ts, match: "const elapsed = computed(() => {"}

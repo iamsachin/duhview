@@ -1,0 +1,7 @@
+description: Case-insensitive search takes byte offsets from the lowercased copy and slices the original; lowercasing can change byte length (e.g. 'İ' -> 'i̇'), so later matches map to the wrong place. The char-boundary helper is a correct decoy.
+bugs:
+  - id: lowercase-offset-mismatch
+    category: bug
+    locations:
+      - {file: snippet.rs, match: "let pos = hay.find(&needle)?;"}
+      - {file: snippet.rs, match: "let start = floor_char_boundary(text, pos.saturating_sub(radius));"}

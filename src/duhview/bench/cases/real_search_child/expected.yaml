@@ -1,0 +1,6 @@
+description: New task-index search selects the parent conversation id, so a spawned task can never be found by its own description (and with kind=child it is filtered out entirely). The f-string SQL is a decoy; all values are bound.
+bugs:
+  - id: index-matches-parent-not-child
+    category: bug
+    locations:
+      - {file: search.py, match: "SELECT t.conversation_id FROM tool_calls t"}

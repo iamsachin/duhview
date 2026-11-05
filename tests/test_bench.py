@@ -52,6 +52,13 @@ def test_score_matches_by_file_and_nearby_line() -> None:
     assert caught == ["caller-not-updated"] and true == 1
 
 
+def test_acceptable_findings_are_not_false_positives_and_not_recall() -> None:
+    (case,) = bench.load_cases(["real_migration_unwrap"])
+    null_line = case.acceptable[0][1]
+    caught, true = bench.score(case, [_finding("migrate.rs", null_line)])
+    assert caught == [] and true == 1
+
+
 def test_totals() -> None:
     s = [bench.Score("a", 2, ["x"], 3, 1, 0.1, []), bench.Score("b", 0, [], 1, 0, 0.2, [])]
     assert bench.totals(s) == {"recall": 0.5, "precision": 0.25, "false_positives": 3, "cost_usd": 0.3}

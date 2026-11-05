@@ -1,0 +1,7 @@
+description: Prompt fallback added to a COALESCE makes the generic fallback unreachable (substr of '' is '', not NULL), so tasks without description or prompt get an empty label.
+bugs:
+  - id: coalesce-fallback-unreachable
+    category: bug
+    locations:
+      - {file: recent.py, match: "substr(COALESCE(json_extract(tc.input, '$.prompt'), ''), 1, 80),"}
+      - {file: recent.py, match: "'Background task') AS label,"}
