@@ -151,6 +151,10 @@ def test_fix_that_adds_lines_next_to_the_flagged_line_counts_as_touched(repo: Pa
     far = github.Thread("F", 2, "src/app.py", 10, "bug", Severity.minor, False, False, v1)  # untouched code
     github.mark_touched(repo, head, [near, far])
     assert near.touched and not far.touched
+    # The comment's commit is unknown locally (rebased away) and can't be fetched: stay open.
+    gone = github.Thread("G", 3, "src/app.py", 4, "bug", Severity.minor, False, False, "f" * 40)
+    github.mark_touched(repo, head, [gone])
+    assert not gone.touched
     plan = github.plan_sync(_result(), Change("PR", {"src/app.py": "x"}), [near, far], [])
     assert [t.id for t in plan.fixed] == ["N"]
 

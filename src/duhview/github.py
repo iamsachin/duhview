@@ -346,6 +346,10 @@ def mark_touched(root: Path, head: str, threads: list[Thread]) -> None:
         if t.resolved or t.outdated or t.line is None or not t.commit:
             continue
         try:
+            if git(root, "cat-file", "-t", t.commit, check=False).strip() != "commit":
+                # After a rebase or force-push the comment's commit is no longer on the branch;
+                # GitHub still serves it by hash.
+                git(root, "fetch", "--no-tags", "origin", t.commit, timeout=FETCH_TIMEOUT_S)
             added = hunk_lines(git(root, "diff", t.commit, head, "--", t.path))[0]
         except GitError:
             continue  # commit not available: stay conservative, leave the thread open
