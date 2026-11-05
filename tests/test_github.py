@@ -30,7 +30,7 @@ def test_parse_pr_ref(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_hunk_lines_shown_includes_context() -> None:
     diff = "@@ -1,3 +1,4 @@\n a\n-b\n+c\n+d\n e\n"
-    assert hunk_lines(diff) == ({2, 3}, {1, 2, 3, 4})
+    assert hunk_lines(diff) == ({2, 3}, {1: "a", 2: "c", 3: "d", 4: "e"})
 
 
 # --- building the review ---------------------------------------------------------------------
@@ -57,6 +57,15 @@ def test_review_inline_multiline_suggestion_and_outside_findings() -> None:
     # Range only partly visible: single-line comment, and no suggestion (it would replace the wrong lines).
     assert partial["line"] == 13 and "start_line" not in partial and "suggestion" not in partial["body"]
     assert "far away" in review["body"] and github.MARKER in review["body"]
+
+
+def test_suggestion_keeps_the_files_indentation() -> None:
+    """Models often return suggestions with the leading indentation stripped or wrong."""
+    diff = ("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,3 +1,3 @@\n def f(x):\n"
+            "-    if x:\n+    if x > 0:\n         return 1\n")
+    f = _f(2, 3, suggestion=" if x >= 0:\n     return 1")  # 1-space indent, as seen from a real model
+    body = github.build_review(_result(f), Change("PR #1", {"a.py": diff}))["comments"][0]["body"]
+    assert "```suggestion\n    if x >= 0:\n        return 1\n```" in body
 
 
 def test_review_text_cannot_ping_people_and_fences_survive_backticks() -> None:

@@ -14,7 +14,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # duhview diffs against the merge base
-      - uses: ./
+      # This repo is duhview itself: run the reviewer from the base commit, so a pull request
+      # cannot change (or disable) the code that reviews it. Other repos use iamsachin/duhview@main.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .reviewer
+      - uses: ./.reviewer
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

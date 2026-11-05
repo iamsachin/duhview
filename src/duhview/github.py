@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -126,10 +127,18 @@ def _suggestion(code: str) -> str:
     return f"{fence}suggestion\n{code}\n{fence}"
 
 
-def _comment_body(f: Finding, with_suggestion: bool) -> str:
+def _reindent(code: str, original_first_line: str) -> str:
+    """Models often drop leading indentation; a one-click suggestion must keep the file's.
+    Keep the suggestion's relative indentation and anchor it at the original first line's."""
+    indent = original_first_line[: len(original_first_line) - len(original_first_line.lstrip())]
+    return "\n".join(indent + line if line.strip() else "" for line in textwrap.dedent(code).splitlines())
+
+
+def _comment_body(f: Finding, original_first_line: str | None) -> str:
+    """`original_first_line` is given only when the whole range is visible, so a suggestion can apply."""
     out = f"**[{f.severity}] {_safe(f.title)}** · {f.category}\n\n{_safe(f.explanation)}"
-    if with_suggestion and f.suggestion is not None:
-        out += "\n\n" + _suggestion(f.suggestion)
+    if original_first_line is not None and f.suggestion is not None:
+        out += "\n\n" + _suggestion(_reindent(f.suggestion, original_first_line))
     return out
 
 
@@ -161,7 +170,8 @@ def build_review(r: ReviewResult, change: Change, inline: bool = True) -> dict[s
         if not inline or not (whole or f.end_line in shown or f.start_line in shown):
             rest.append(f)
             continue
-        c: dict[str, Any] = {"path": f.file, "side": "RIGHT", "body": _comment_body(f, whole)}
+        c: dict[str, Any] = {"path": f.file, "side": "RIGHT",
+                             "body": _comment_body(f, shown[span[0]] if whole else None)}
         if whole and len(span) > 1:
             c |= {"start_line": span[0], "start_side": "RIGHT", "line": span[-1]}
         else:

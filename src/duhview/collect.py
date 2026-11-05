@@ -126,11 +126,11 @@ def review_units(change: Change) -> list[dict[str, str]]:
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
-def hunk_lines(file_diff: str) -> tuple[set[int], set[int]]:
-    """(lines the diff adds, all new-file lines shown in the diff). GitHub only accepts review
-    comments on the second set."""
+def hunk_lines(file_diff: str) -> tuple[set[int], dict[int, str]]:
+    """(lines the diff adds, new-file line number -> text for every line shown in the diff).
+    GitHub only accepts review comments on shown lines."""
     added: set[int] = set()
-    shown: set[int] = set()
+    shown: dict[int, str] = {}
     new: int | None = None
     for line in file_diff.splitlines():
         if m := _HUNK.match(line):
@@ -140,7 +140,7 @@ def hunk_lines(file_diff: str) -> tuple[set[int], set[int]]:
         elif not line.startswith("-"):
             if line.startswith("+"):
                 added.add(new)
-            shown.add(new)
+            shown[new] = line[1:]
             new += 1
     return added, shown
 
