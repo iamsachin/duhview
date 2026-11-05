@@ -32,7 +32,7 @@ class Rule(_Strict):
 
 
 class BudgetCfg(_Strict):
-    max_usd_per_review: float = 1.0
+    max_usd_per_review: float = 2.0
     max_tool_calls_per_agent: int = 40
     agent_timeout_s: int = 300
 

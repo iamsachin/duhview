@@ -65,7 +65,7 @@ rules:
   - text: "Handlers must not run raw SQL; use the repository layer."
     paths: ["app/handlers/*"]
 budget:
-  max_usd_per_review: 1.00
+  max_usd_per_review: 2.00
   max_tool_calls_per_agent: 40
   agent_timeout_s: 300
 scanners: [gitleaks, semgrep]   # omit to run whichever are installed; listed ones are required
