@@ -202,6 +202,31 @@ def test_sync_rerun_posts_nothing_new_but_resolves_fixed(monkeypatch: pytest.Mon
     assert not any(p.endswith("/reviews") for _, p in calls)  # no new review
 
 
+def test_sync_survives_failed_thread_updates_and_never_repeats_the_fixed_note(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seen live: the Actions token may not resolve threads. That must not abort the sync, and a
+    thread already told "fixed" must not be told again on every run."""
+    calls: list[tuple[str, str]] = []
+    noted = _t(11, outdated=True, tid="NOTED")
+    noted.fixed_noted = True
+
+    def fake_api(m: str, p: str, t: str, b: dict[str, Any] | None = None) -> Any:
+        calls.append((m, p))
+        if p == "/graphql":
+            raise github.GitHubError("GitHub GraphQL: Resource not accessible by integration")
+        return {"html_url": "u"}
+
+    monkeypatch.setattr(github, "existing_threads", lambda pr, tok: [noted, _t(30, outdated=True, tid="NEW")])
+    monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
+    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
+    monkeypatch.setattr(github, "api", fake_api)
+    pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
+    msg = github.sync_review(pr, _result(_f(20, 20, "brand new")), CHANGE, "tok", Path("."))
+    assert msg.startswith("posted 1 new finding(s)")
+    assert "2 fixed (0 resolved)" in msg and "not be allowed to resolve" in msg
+    assert sum(p.endswith("/replies") for _, p in calls) == 1  # only the thread not yet told
+
+
 # --- end to end: --pr --post against a local "origin" ---------------------------------------
 
 

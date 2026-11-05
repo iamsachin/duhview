@@ -9,7 +9,7 @@ import tempfile
 import textwrap
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -260,6 +260,7 @@ class Thread:
     outdated: bool  # GitHub: the commented lines themselves changed
     commit: str = ""  # commit the comment was posted on
     touched: bool = False  # code within MATCH_LINES of the comment changed since `commit`
+    fixed_noted: bool = False  # duhview already replied that it looks fixed
 
 
 @dataclass
@@ -304,6 +305,7 @@ def plan_sync(r: ReviewResult, change: Change, threads: list[Thread], listed: li
     return SyncPlan(new, worse, fixed, len(unresolved) - len(fixed))
 
 
+_RESOLVE = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id } } }"
 _THREADS_QUERY = """
 query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -332,10 +334,12 @@ def existing_threads(pr: PullRequest, tok: str) -> list[Thread]:
         comments = n["comments"]["nodes"]
         if not comments or not (root := _markers(comments[0]["body"])):
             continue  # not started by duhview
-        sevs = [Severity(m["sev"]) for c in comments for m in _markers(c["body"]) if m.get("sev") in Severity]
+        marks = [m for c in comments for m in _markers(c["body"])]
+        sevs = [Severity(m["sev"]) for m in marks if m.get("sev") in Severity]
         threads.append(Thread(n["id"], comments[0]["databaseId"], n["path"], n["line"] or n["originalLine"],
                               root[0].get("cat", ""), min(sevs, key=lambda s: s.rank), n["isResolved"],
-                              n["isOutdated"], (comments[0].get("originalCommit") or {}).get("oid", "")))
+                              n["isOutdated"], (comments[0].get("originalCommit") or {}).get("oid", ""),
+                              fixed_noted=any(m.get("fixed") for m in marks)))
     return threads
 
 
@@ -369,24 +373,42 @@ def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root
     mark_touched(root, pr.head_sha, threads)
     plan = plan_sync(r, change, threads, listed_findings(pr, tok))
     done: list[str] = []
-    replies = f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/comments"
-    for t, f in plan.worse:
-        body = (f"⬆️ **Now [{f.severity}]** (was {t.severity}): {_safe(f.title)}\n\n{_safe(f.explanation)}\n\n"
-                + _marker(cat=str(f.category), sev=str(f.severity)))
-        api("POST", f"{replies}/{t.root_id}/replies", tok, {"body": body})
-    if plan.worse:
-        done.append(f"{len(plan.worse)} got worse (replied)")
-    for t in plan.fixed:
-        api("POST", f"{replies}/{t.root_id}/replies", tok,
-            {"body": f"✅ No longer found, and this code changed in `{pr.head_sha[:7]}`. Resolving."})
-        _graphql("mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id } } }",
-                 {"id": t.id}, tok)
-    if plan.fixed:
-        done.append(f"{len(plan.fixed)} fixed (resolved)")
     if plan.new:
-        progress = f"{len(plan.new)} new · {plan.open} still open from earlier · {len(plan.fixed)} fixed" \
-            if plan.open or plan.fixed else None
-        done.insert(0, f"posted {len(plan.new)} new finding(s): {post_review(pr, r, change, tok, plan.new, progress)}")
+        progress = (f"{len(plan.new)} new · {plan.open} still open from earlier · {len(plan.fixed)} fixed"
+                    if plan.open or plan.fixed else None)
+        done.append(f"posted {len(plan.new)} new finding(s): {post_review(pr, r, change, tok, plan.new, progress)}")
     else:
-        done.insert(0, f"nothing new to post ({plan.open} earlier finding(s) still open)")
+        done.append(f"nothing new to post ({plan.open} earlier finding(s) still open)")
+
+    # Thread updates are best-effort: one failing must not stop the others or fail the review.
+    failed: list[str] = []
+    replies = f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/comments"
+
+    def attempt(what: str, fn: Callable[..., Any], *args: Any) -> bool:
+        try:
+            fn(*args)
+            return True
+        except GitHubError as e:
+            failed.append(f"{what}: {e}")
+            return False
+
+    worse = 0
+    for t, f in plan.worse:
+        body = (f"⬆️ **Now {_BADGE[f.severity]}** (was {t.severity}): **{_safe(f.title)}**\n\n{_safe(f.explanation)}"
+                f"\n\n{_marker(cat=str(f.category), sev=str(f.severity))}")
+        worse += attempt("reply", api, "POST", f"{replies}/{t.root_id}/replies", tok, {"body": body})
+    resolved = 0
+    for t in plan.fixed:
+        if not t.fixed_noted:  # never say it twice, e.g. when resolving failed last time
+            note = f"✅ No longer found, and this code changed in `{pr.head_sha[:7]}`.\n\n{_marker(fixed=True)}"
+            attempt("reply", api, "POST", f"{replies}/{t.root_id}/replies", tok, {"body": note})
+        resolved += attempt("resolve thread", _graphql, _RESOLVE, {"id": t.id}, tok)
+    if worse:
+        done.append(f"{worse} got worse (replied)")
+    if plan.fixed:
+        done.append(f"{len(plan.fixed)} fixed ({resolved} resolved)")
+    if failed:
+        hint = (" (the token may not be allowed to resolve review threads)"
+                if any("not accessible" in f for f in failed) else "")
+        done.append(f"warning: {len(failed)} thread update(s) failed{hint}: {failed[0]}")
     return "; ".join(done)
