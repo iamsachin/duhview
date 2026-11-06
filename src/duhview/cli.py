@@ -1,15 +1,19 @@
 import asyncio
+import os
 import shutil
+import sys
 from contextlib import ExitStack
+from importlib.resources import files
 from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
 
 from duhview import __version__, github
-from duhview.collect import GitError, Target, get_change, repo_root, revision_reader
+from duhview.collect import GitError, Target, get_change, repo_root, revision_reader, temp_worktree
 from duhview.config import Config, load_config
 from duhview.github import GitHubError
+from duhview.hooks import BYPASS_ENV, install_hook, push_ranges, record_bypass
 from duhview.model import ModelError, resolve_model
 from duhview.report import EXIT_CLEAN, EXIT_ERROR, exit_code, receipt, write_reports
 from duhview.review import run_review
@@ -92,6 +96,93 @@ def review(
                 _fail(f"review finished but posting failed: {e}")
         typer.echo(result.model_dump_json(indent=2) if json_out else receipt(result, str(reports["md"])))
         raise typer.Exit(exit_code(result, cfg.review.block_on_severity))
+
+
+@app.command("hook-run", hidden=True)
+def hook_run(
+    remote: Annotated[str, typer.Argument()] = "origin",
+    url: Annotated[str, typer.Argument()] = "",
+) -> None:
+    """Run by the pre-push hook: review the commits being pushed.
+
+    Blocks the push (exit 1) only on findings at or above block_on_severity. An incomplete
+    review or a setup problem warns and lets the push through, so duhview never strands you.
+    """
+    stdin = sys.stdin.read()
+    try:
+        root = repo_root(Path.cwd())
+        ranges = push_ranges(root, remote, stdin)
+    except GitError as e:
+        typer.echo(f"duhview: not reviewed ({e}); letting the push through", err=True)
+        raise typer.Exit(0) from e
+    if not ranges:
+        raise typer.Exit(0)
+
+    mode = os.environ.get(BYPASS_ENV, "").strip().lower()
+    if mode in ("skip", "vouch"):
+        where = record_bypass(root, mode, ranges)
+        typer.echo(f"duhview: {mode} recorded in {where}", err=True)
+        raise typer.Exit(0)
+    if mode:
+        typer.echo(f"duhview: ignoring {BYPASS_ENV}={mode} (use skip or vouch)", err=True)
+
+    blocked = False
+    for r in ranges:
+        with temp_worktree(root, r.head, prefix="duhview-push-") as wt:
+            try:
+                cfg = load_config(wt)
+                finder = resolve_model(cfg.model.name)
+                verifier = resolve_model(cfg.model.verifier) if cfg.model.verifier else None
+                change = get_change(wt, Target(base=r.base), cfg)
+            except (GitError, ModelError, ValueError) as e:
+                typer.echo(f"duhview: {r.ref} not reviewed ({e}); letting the push through", err=True)
+                continue
+            if not change.files:
+                continue
+            change.target = f"push to {r.ref}"
+            typer.echo(f"duhview: reviewing {len(change.files)} file(s) pushed to {r.ref} with {finder}…", err=True)
+            result = asyncio.run(run_review(wt, change, cfg, finder, verifier, None, archive_root=root))
+        reports = write_reports(result, Path(result.archive_dir or "."))
+        typer.echo(receipt(result, str(reports["md"])), err=True)
+        # Serious findings block even when another part of the review was incomplete.
+        if any(f.severity.rank <= cfg.review.block_on_severity.rank for f in result.findings):
+            blocked = True
+        elif result.incomplete:
+            typer.echo("duhview: review incomplete; letting the push through", err=True)
+    if blocked:
+        typer.echo(f"duhview: push blocked. Fix the findings, or push anyway (recorded): "
+                   f"{BYPASS_ENV}=skip git push, or {BYPASS_ENV}=vouch git push if you reviewed it yourself.",
+                   err=True)
+        raise typer.Exit(1)
+
+
+@app.command("install-hook")
+def install_hook_cmd(
+    force: Annotated[bool, typer.Option("--force", help="Replace an existing pre-push hook (kept as .bak).")] = False,
+) -> None:
+    """Install a git pre-push hook that reviews the commits you push."""
+    try:
+        path = install_hook(repo_root(Path.cwd()), force)
+    except (GitError, ValueError) as e:
+        _fail(str(e))
+    typer.echo(f"duhview: installed {path}. Pushes are now reviewed; "
+               f"bypass once with {BYPASS_ENV}=skip or {BYPASS_ENV}=vouch (both recorded).")
+
+
+@app.command("install-skill")
+def install_skill(
+    path: Annotated[Path | None, typer.Option(file_okay=False, help="Skills directory to install into.")] = None,
+) -> None:
+    """Install the duhview skill for coding agents (Claude Code, Codex)."""
+    homes = [path] if path else [d / "skills" for d in (Path.home() / ".claude", Path.home() / ".codex") if d.is_dir()]
+    if not homes:
+        _fail("no ~/.claude or ~/.codex found; pass --path <skills directory>")
+    text = files("duhview").joinpath("skill/SKILL.md").read_text()
+    for home in homes:
+        target = home / "duhview" / "SKILL.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        typer.echo(f"duhview: installed skill {target}")
 
 
 def _fail(message: str) -> NoReturn:

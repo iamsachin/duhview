@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import textwrap
 import urllib.error
 import urllib.request
@@ -15,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from duhview.collect import Change, GitError, git, hunk_lines
+from duhview.collect import Change, GitError, git, hunk_lines, temp_worktree
 from duhview.types import Finding, ReviewResult, Severity
 
 API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
@@ -101,16 +100,8 @@ def pr_checkout(root: Path, pr: PullRequest) -> Iterator[Path]:
         f"+refs/heads/{pr.base_ref}:refs/duhview/pr/{pr.number}/base", timeout=FETCH_TIMEOUT_S)
     for sha in (pr.base_sha, pr.head_sha):
         git(root, "cat-file", "-e", f"{sha}^{{commit}}")  # raises if the fetch did not bring it
-    tmp = Path(tempfile.mkdtemp(prefix=f"duhview-pr{pr.number}-")).resolve()
-    git(root, "worktree", "add", "--detach", str(tmp), pr.head_sha)
-    try:
+    with temp_worktree(root, pr.head_sha, prefix=f"duhview-pr{pr.number}-") as tmp:
         yield tmp
-    finally:
-        try:
-            git(root, "worktree", "remove", "--force", str(tmp))
-        except GitError:
-            shutil.rmtree(tmp, ignore_errors=True)
-            git(root, "worktree", "prune", check=False)
 
 
 # --- the review --------------------------------------------------------------------------------

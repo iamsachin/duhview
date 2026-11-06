@@ -1,8 +1,11 @@
 """Collect what to review: the diff, changed files and project context."""
 
 import re
+import shutil
 import subprocess
-from collections.abc import Callable
+import tempfile
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -33,6 +36,21 @@ def git(root: Path, *args: str, check: bool = True, timeout: int = 30) -> str:
     return r.stdout
 
 
+@contextmanager
+def temp_worktree(root: Path, rev: str, prefix: str = "duhview-") -> Iterator[Path]:
+    """Check `rev` out into a temporary worktree; the user's checkout and uncommitted work are untouched."""
+    tmp = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
+    git(root, "worktree", "add", "--detach", str(tmp), rev)
+    try:
+        yield tmp
+    finally:
+        try:
+            git(root, "worktree", "remove", "--force", str(tmp))
+        except GitError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            git(root, "worktree", "prune", check=False)
+
+
 def repo_root(cwd: Path) -> Path:
     return Path(git(cwd, "rev-parse", "--show-toplevel").strip()).resolve()
 
@@ -42,8 +60,11 @@ class Target:
     staged: bool = False
     branch: str | None = None
     commit: str | None = None
+    base: str | None = None  # plain `base..HEAD` diff, e.g. the commits a push adds
 
     def label(self) -> str:
+        if self.base:
+            return f"{self.base[:7]}..HEAD"
         if self.staged:
             return "staged changes"
         if self.branch:
@@ -89,7 +110,9 @@ def _untracked_diff(root: Path) -> str:
 
 
 def get_change(root: Path, target: Target, cfg: Config) -> Change:
-    if target.staged:
+    if target.base:
+        diff = git(root, "diff", target.base, "HEAD")
+    elif target.staged:
         diff = git(root, "diff", "--cached")
     elif target.branch:
         diff = git(root, "diff", f"{target.branch}...HEAD")

@@ -50,6 +50,36 @@ and SARIF) in `.duhview/runs/`, which ignores itself in git.
 4. **Verify** (optional): each agent finding is re-checked in a fresh context.
 
 
+## Before you push: the pre-push hook
+
+```sh
+duhview install-hook      # in your repo; reviews the commits each `git push` adds
+```
+
+The hook reviews exactly the commits being pushed, in a temporary worktree, so uncommitted
+edits are ignored. It blocks the push only when a finding reaches `block_on_severity`. If the
+review is incomplete or cannot run (offline, no API key), it warns and lets the push through.
+
+To push past a block, say why, and it is recorded in `.duhview/runs/`:
+
+```sh
+DUHVIEW=skip git push     # push without a review
+DUHVIEW=vouch git push    # you reviewed it yourself
+```
+
+(`git push --no-verify` also skips the hook, but leaves no record.) If the repo already has a
+pre-push hook, `install-hook` leaves it alone and prints the line to add to it; `--force`
+replaces it and keeps a `.bak` copy.
+
+## For coding agents
+
+```sh
+duhview install-skill     # copies the skill into ~/.claude/skills and ~/.codex/skills
+```
+
+The skill tells Claude Code or Codex to run `duhview review --json` after a non-trivial
+change, show you the findings, and fix only the ones you pick.
+
 ## Pull requests and GitHub Actions
 
 `duhview review --pr <url or number>` checks the pull request out into a temporary git worktree
