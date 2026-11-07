@@ -100,6 +100,7 @@ def _fake_github(monkeypatch: pytest.MonkeyPatch, root_body: str) -> list[tuple[
 
     monkeypatch.setattr(respond, "api", fake_api)
     monkeypatch.setattr(respond, "api_pages", lambda path, tok: [
+        {"id": 5, "path": "a.py", "line": 11, "user": {"login": "github-actions[bot]"}, "body": root_body},
         {"in_reply_to_id": 5, "user": {"login": "sam"}, "body": "This is intended: the caller validates x."}])
     return calls
 
@@ -152,6 +153,8 @@ def test_explain_in_the_conversation_quotes_the_question(repo: Path, monkeypatch
     method, path, body = calls[-1]
     assert (method, path) == ("POST", "/repos/o/r/issues/7/comments")
     assert body["body"].startswith("> why a global cache?\n\nIt caches per process")
+    # It saw the earlier thread, where the maintainer explained the code was intended.
+    assert "<discussion>" in prompts[0] and "caller validates x" in prompts[0]
 
 
 # --- dismissed threads ---------------------------------------------------------------------------

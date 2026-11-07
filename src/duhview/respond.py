@@ -105,17 +105,38 @@ async def _converse(req: Request, pr: PullRequest, change: Change, ctx: str, mod
     return f"replied in thread ({out.verdict})"
 
 
+MAX_DISCUSSION_CHARS = 20_000
+
+
+def _discussion(pr: PullRequest, tok: str) -> str:
+    """Conversations on duhview's findings, so an answer doesn't contradict what the team settled.
+    Seen live: `explain` called something a bug right after a maintainer explained it was intended."""
+    comments = api_pages(f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/comments", tok)
+    roots = {c["id"]: c for c in comments if not c.get("in_reply_to_id") and _markers(c.get("body", ""))}
+    lines = []
+    for rid, root in roots.items():
+        title = next((m.get("title") for m in _markers(root["body"]) if m.get("title")), "finding")
+        replies = [c for c in comments if c.get("in_reply_to_id") == rid]
+        if replies:
+            lines.append(f"### {root['path']}:{root.get('line') or root.get('original_line')}: {title}")
+            lines += [f"**{c['user']['login']}:** {c['body'].split('<!--')[0].strip()}" for c in replies]
+    text = "\n\n".join(lines)[:MAX_DISCUSSION_CHARS]
+    return _fence("discussion", text) if text else ""
+
+
 async def _explain(req: Request, pr: PullRequest, change: Change, ctx: str, model: str, tools: RepoTools,
                    budget: llm.Budget, log: list[Any], tok: str) -> str:
     location = ""
     if req.thread_root is not None:
         c = api("GET", f"/repos/{pr.owner}/{pr.repo}/pulls/comments/{req.comment_id}", tok)
         location = _fence("location", f"{c['path']}:{c.get('line') or c.get('original_line')}\n{c.get('diff_hunk', '')}")
+    discussion = _discussion(pr, tok)
     diff = change.diff
     if len(diff) > MAX_DIFF_CHARS:  # big PR: list the files and let the agent read what it needs
         diff = "Changed files (read them with the tools):\n" + "\n".join(change.files)
     user = (ctx + _fence("question", req.text or "Explain this change.") + "\n\n"
-            + (location + "\n\n" if location else "") + _fence("untrusted_diff", diff))
+            + (location + "\n\n" if location else "") + (discussion + "\n\n" if discussion else "")
+            + _fence("untrusted_diff", diff))
     out = await ask_json(model, _prompt("explainer"), user, Answer, tools, budget, MAX_TOOL_CALLS, log)
     if req.thread_root is not None:
         _reply_in_thread(pr, req.thread_root, _safe(out.reply), tok)
