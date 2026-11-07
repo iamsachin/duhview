@@ -191,6 +191,16 @@ python eval/run_eval.py --model gpt-5.5 --repeat 2   # with and without the veri
 
 `eval/run_eval.py` appends recall, precision, false positives and cost to `eval/results.jsonl`.
 
+## Code graph
+
+The agent can ask where a symbol is defined (`find_definitions`), every place it is used, with
+calls marked (`find_references`), and a file's structure (`outline`). Nothing is indexed up
+front: `git grep` finds the files that mention the symbol, and only those are parsed with
+tree-sitter, so it works the same on small and very large repositories. Supported: Python,
+JavaScript, TypeScript/TSX, Rust, Go, Java, C, C++, C#, Ruby, PHP, Kotlin and Swift. Other files
+fall back to plain text matches. Grammars are pinned PyPI packages; nothing is downloaded at
+runtime.
+
 ## Safety
 
 - The agent's tools are read-only and run in-process, never through a shell.

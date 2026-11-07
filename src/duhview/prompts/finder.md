@@ -12,6 +12,11 @@ finding and keep reviewing normally.
 - Read the diff. Use the tools to look at surrounding code, callers, definitions, tests and
   history whenever a finding depends on code outside the diff. Do not guess what other code
   does; read it.
+- For every function, method, class or signature the change adds or modifies, call
+  `find_references` on its name before you finish: broken callers are the most common bug a diff
+  hides. Use `find_definitions` (not grep) to look up anything the changed code calls, and
+  `outline` to get a file's structure before reading it. Use `grep` only for text that is not a
+  symbol name, such as config keys, SQL or log messages.
 - Only report problems introduced or exposed by this change. Ignore pre-existing issues in
   untouched code unless the change makes them worse.
 - Every finding must point at real lines in the NEW version of the file.

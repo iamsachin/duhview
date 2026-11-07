@@ -7,10 +7,12 @@ not ignored. That keeps it inside the repo and away from .env files and build ou
 import asyncio
 import json
 import re
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from duhview.codegraph import CodeGraph, CodeGraphError
 from duhview.collect import GitError, git
 
 TOOL_TIMEOUT_S = 10
@@ -18,6 +20,7 @@ MAX_READ_BYTES = 200_000
 MAX_READ_LINES = 1500
 MAX_GREP_FILE_BYTES = 1_000_000
 MAX_OUTPUT_CHARS = 30_000
+MAX_GREP_HITS = 200
 
 
 class ToolError(Exception):
@@ -48,6 +51,13 @@ SCHEMAS = [
     _fn("git_log", "Recent commits, optionally for one path.", {"path": _S, "n": _I}, []),
     _fn("git_blame", "Blame a line range of a file.",
         {"path": _S, "start_line": _I, "end_line": _I}, ["path", "start_line", "end_line"]),
+    _fn("find_definitions", "Where a function, class, method, type or variable is defined (parsed, not text "
+        "search). Use it instead of grep to look up a symbol.", {"symbol": _S}, ["symbol"]),
+    _fn("find_references", "Every use of a symbol, each labelled call, reference or definition; comments and "
+        "strings are excluded. Use it to find the callers of a function the change modifies.",
+        {"symbol": _S}, ["symbol"]),
+    _fn("outline", "The definitions in a file (classes, functions, methods) with line numbers.",
+        {"path": _S}, ["path"]),
 ]
 
 
@@ -61,7 +71,10 @@ class RepoTools:
         self._impl: dict[str, Callable[..., str]] = {
             "read_file": self.read_file, "grep": self.grep, "list_dir": self.list_dir,
             "git_log": self.git_log, "git_blame": self.git_blame,
+            "find_definitions": self.find_definitions, "find_references": self.find_references,
+            "outline": self.outline,
         }
+        self.graph = CodeGraph(self.root, self.files)
 
     # --- path jail ---------------------------------------------------------------------------
     def _rel(self, path: str) -> str:
@@ -96,11 +109,14 @@ class RepoTools:
         return out or "(empty)"
 
     def grep(self, pattern: str, path: str = ".", regex: bool = False) -> str:
-        # shortcut: a pathological regex can stall this worker thread past the timeout;
-        # move to a subprocess if that ever shows up.
-        rx = re.compile(pattern if regex else re.escape(pattern))
+        rel = self._rel(path)
+        if not regex:
+            return self._git_grep(pattern, rel)
+        # shortcut: regex mode scans files in Python (git grep's regex dialect differs by platform), and a
+        # pathological regex can stall this worker thread past the timeout; move to a subprocess if seen.
+        rx = re.compile(pattern)
         hits: list[str] = []
-        for f in self._under(self._rel(path)):
+        for f in self._under(rel):
             p = self.root / f
             if not p.is_file() or p.stat().st_size > MAX_GREP_FILE_BYTES:
                 continue
@@ -113,6 +129,36 @@ class RepoTools:
                     if len(hits) >= 200:
                         return "\n".join(hits) + "\n... (truncated at 200 matches)"
         return "\n".join(hits) or "no matches"
+
+    def _git_grep(self, text: str, rel: str) -> str:
+        """Literal search with git grep: fast on very large repos, and killable on timeout."""
+        args = ["git", "grep", "-n", "-I", "-F", "--untracked", "--no-color", "-e", text, "--", rel or "."]
+        try:
+            r = subprocess.run(args, cwd=self.root, capture_output=True, text=True, errors="replace",
+                               timeout=TOOL_TIMEOUT_S, check=False)
+        except subprocess.TimeoutExpired as e:
+            raise ToolError("search timed out; narrow it with `path`") from e
+        if r.returncode not in (0, 1):  # 1 = no matches
+            raise ToolError(r.stderr.strip() or "git grep failed")
+        hits = []
+        for line in r.stdout.splitlines():
+            f, _, rest = line.partition(":")
+            num, _, text_ = rest.partition(":")
+            if f in self.files:
+                hits.append(f"{f}:{num}: {text_[:300]}")  # same format as regex mode
+        if len(hits) > MAX_GREP_HITS:
+            return "\n".join(hits[:MAX_GREP_HITS]) + f"\n... (truncated at {MAX_GREP_HITS} matches)"
+        return "\n".join(hits) or "no matches"
+
+    def find_definitions(self, symbol: str) -> str:
+        return self.graph.definitions(symbol)
+
+    def find_references(self, symbol: str) -> str:
+        return self.graph.references(symbol)
+
+    def outline(self, path: str) -> str:
+        rel, _ = self._file(path)
+        return self.graph.outline(rel)
 
     def list_dir(self, path: str = ".") -> str:
         rel = self._rel(path)
@@ -143,6 +189,6 @@ class RepoTools:
             out = await asyncio.wait_for(asyncio.to_thread(fn, **args), TOOL_TIMEOUT_S)
         except TimeoutError:
             return f"error: {name} timed out"
-        except (ToolError, GitError, TypeError, ValueError, re.error, OSError) as e:
+        except (ToolError, GitError, CodeGraphError, TypeError, ValueError, re.error, OSError) as e:
             return f"error: {e}"
         return out[:MAX_OUTPUT_CHARS] + ("\n... (output truncated)" if len(out) > MAX_OUTPUT_CHARS else "")
