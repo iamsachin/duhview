@@ -198,6 +198,16 @@ def test_a_different_issue_near_a_fixed_line_is_not_taken_for_the_old_one() -> N
     assert github.plan_sync(_result(new), CHANGE, [stable], []).new == []
 
 
+def test_a_reported_title_matches_even_when_lines_moved_far() -> None:
+    """Seen live: a workflow file rewritten on each push moved findings far beyond the line window,
+    and the same concerns were posted again. The reviewer now re-reports open issues by exact title."""
+    t = _t(8, outdated=True, tid="OLD")
+    t.title = "Fork PRs get no secrets"
+    moved = _f(40, 40, "fork PRs get no secrets")
+    plan = github.plan_sync(_result(moved), CHANGE, [t], [])
+    assert plan.new == [] and plan.fixed == []
+
+
 def test_plan_respects_human_resolved_threads_and_listed_findings() -> None:
     f = _sev(_f(11, 11), "critical")
     plan = github.plan_sync(_result(f), CHANGE, [_t(11, resolved=True)], [])
@@ -467,3 +477,12 @@ def test_review_threads_follow_the_cursor(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(github, "api", fake_api)
     threads = github.existing_threads(github.PullRequest("o", "r", 1, "main", "b", "h", "o/r"), "tok")
     assert [t.id for t in threads] == ["T1", "T2"] and cursors == [None, "C1"]
+
+
+def test_known_issues_lists_only_open_findings(monkeypatch: pytest.MonkeyPatch) -> None:
+    open_t, fixed, dismissed = _t(8, tid="A"), _t(9, tid="B"), _t(10, tid="C")
+    open_t.title, fixed.title, dismissed.title = "still open", "was fixed", "agreed not a bug"
+    fixed.fixed_noted, dismissed.dismissed = True, True
+    monkeypatch.setattr(github, "existing_threads", lambda pr, tok: [open_t, fixed, dismissed])
+    pr = github.PullRequest("o", "r", 1, "main", "b", "h", "o/r")
+    assert github.known_issues(pr, "tok") == "- a.py:8 [major] still open"

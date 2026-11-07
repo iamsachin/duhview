@@ -64,12 +64,15 @@ def review(
         try:
             root = repo_root(Path.cwd())
             review_root, target, read_trusted, pull, tok = root, Target(staged, branch, commit), None, None, ""
+            known = ""
             if pr is not None:
                 tok = github.token()
                 pull = github.get_pr(*github.parse_pr_ref(pr, root), tok)
                 review_root = stack.enter_context(github.pr_checkout(root, pull))
                 read_trusted = revision_reader(root, pull.base_sha)
                 target = Target(branch=pull.base_sha)
+                if post:
+                    known = github.known_issues(pull, tok)
             cfg = load_config(review_root, read_trusted)
             finder = resolve_model(model or cfg.model.name)
             verifier_name = verifier_model or cfg.model.verifier
@@ -88,7 +91,8 @@ def review(
         result = asyncio.run(run_review(review_root, change, cfg, finder, verifier, spec, offline,
                                         read_trusted=read_trusted, archive_root=root, summarize=post,
                                         focus=focus,
-                                        description=f"# {pull.title}\n\n{pull.body}" if pull else None))
+                                        description=f"# {pull.title}\n\n{pull.body}" if pull else None,
+                                        known=known or None))
         reports = write_reports(result, Path(result.archive_dir or "."))
         if sarif:
             shutil.copyfile(reports["sarif"], sarif)

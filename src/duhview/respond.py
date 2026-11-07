@@ -12,12 +12,13 @@ from duhview.agent import ask_json
 from duhview.archive import Archive
 from duhview.collect import Change, Reader, project_context
 from duhview.config import Config
-from duhview.github import PullRequest, _marker, _markers, _safe, api, api_pages
+from duhview.github import MARKER, PullRequest, _marker, _markers, _safe, api, api_pages
 from duhview.review import _fence, _prompt
 from duhview.tools import RepoTools
 
 # Comments can trigger paid model calls, and comment workflows get secrets even on fork PRs.
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
+OWN = "<!-- duhview"  # every comment duhview posts carries a hidden marker starting with this
 MAX_TOOL_CALLS = 15
 MAX_DIFF_CHARS = 60_000
 _COMMAND = re.compile(r"@duhview\s+(review|explain)\b[\s:]*(.*)", re.IGNORECASE | re.DOTALL)
@@ -49,6 +50,10 @@ def parse_event(name: str, payload: dict[str, Any]) -> Request | None:
     if c.get("author_association") not in TRUSTED:
         return None
     body = c.get("body") or ""
+    if OWN in body:
+        # duhview's own comment. With a personal token they are posted as the repo owner, so the
+        # author checks above don't catch them; without this, it would answer itself forever.
+        return None
     m = _COMMAND.search(body)
     if name == "issue_comment":
         issue = payload.get("issue") or {}
@@ -101,7 +106,7 @@ async def _converse(req: Request, pr: PullRequest, change: Change, ctx: str, mod
     if out.verdict == "agree":
         # Remembered: later runs on this PR won't raise it again, and it no longer fails the check.
         body += "\n\n_Marked as not an issue for this pull request._\n\n" + _marker(dismissed=True)
-    _reply_in_thread(pr, int(req.thread_root or 0), body, tok)
+    _reply_in_thread(pr, int(req.thread_root or 0), body + "\n\n" + MARKER, tok)
     return f"replied in thread ({out.verdict})"
 
 
@@ -139,9 +144,9 @@ async def _explain(req: Request, pr: PullRequest, change: Change, ctx: str, mode
             + _fence("untrusted_diff", diff))
     out = await ask_json(model, _prompt("explainer"), user, Answer, tools, budget, MAX_TOOL_CALLS, log)
     if req.thread_root is not None:
-        _reply_in_thread(pr, req.thread_root, _safe(out.reply), tok)
+        _reply_in_thread(pr, req.thread_root, _safe(out.reply) + "\n\n" + MARKER, tok)
     else:
         quote = "\n".join(f"> {line}" for line in _safe(req.text or "explain").splitlines())
         api("POST", f"/repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments", tok,
-            {"body": f"{quote}\n\n{_safe(out.reply)}"})
+            {"body": f"{quote}\n\n{_safe(out.reply)}\n\n{MARKER}"})
     return "answered"

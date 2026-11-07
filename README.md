@@ -154,15 +154,38 @@ permissions:
   pull-requests: write
 jobs:
   review:
+    # Start a job only when duhview has work: a PR from this repo (forks get no secrets), or a
+    # trusted person's comment on a PR that mentions @duhview or replies in a review thread.
+    # duhview's own comments carry a hidden "<!-- duhview" marker and are skipped.
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name != 'pull_request' &&
+       (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request) &&
+       (contains(github.event.comment.body, '@duhview') || github.event.comment.in_reply_to_id) &&
+       !contains(github.event.comment.body, '<!-- duhview') &&
+       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    # Reviews: one per PR, a new push cancels the old one. Comments: their own group each.
+    concurrency:
+      group: >-
+        ${{ github.event_name == 'pull_request'
+            && format('duhview-pr-{0}', github.event.pull_request.number)
+            || format('duhview-comment-{0}', github.event.comment.id) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pin actions to commit SHAs: tags and branches can be moved to different code.
+      - uses: actions/checkout@<commit-sha>  # v4
         with:
           fetch-depth: 0
-      - uses: iamsachin/duhview@main
-        # with:
-        #   model: gpt-5.5     # optional; defaults to the base branch's config
-        #   scanners: "false" # skip installing gitleaks and semgrep (on by default)
+      - uses: iamsachin/duhview@<commit-sha>
+        with:
+          # Optional: a fine-grained token with "Pull requests: read and write" on this repo lets
+          # duhview resolve threads it finds fixed (the default token can't). Comments are then
+          # posted as the token's owner.
+          github-token: ${{ secrets.DUHVIEW_TOKEN || github.token }}
+          # model: gpt-5.5     # optional; defaults to the base branch's config
+          # scanners: "false" # skip installing gitleaks and semgrep (on by default)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```

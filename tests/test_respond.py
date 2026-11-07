@@ -41,6 +41,8 @@ def test_parse_commands_from_trusted_people_only() -> None:
     assert respond.parse_event("issue_comment", _event("@duhview review", assoc="CONTRIBUTOR")) is None
     assert respond.parse_event("issue_comment", _event("@duhview review", bot=True)) is None
     assert respond.parse_event("issue_comment", _event("thanks!")) is None
+    # duhview's own comments (posted as the owner when using a personal token) are never answered.
+    assert respond.parse_event("issue_comment", _event("@duhview review\n\n<!-- duhview -->")) is None
     plain_issue = _event("@duhview review") | {"issue": {"number": 7}}
     assert respond.parse_event("issue_comment", plain_issue) is None
 
@@ -82,6 +84,8 @@ def test_action_gate(tmp_path: Path) -> None:
     assert _gate(tmp_path, "issue_comment", _event("lgtm"))["mode"] == "skip"
     reply = _event("intended", reply_to=5, review_comment=True)
     assert _gate(tmp_path, "pull_request_review_comment", reply)["mode"] == "respond"
+    own = _event("Agreed.\n\n<!-- duhview:{\"dismissed\":true} -->", reply_to=5, review_comment=True)
+    assert _gate(tmp_path, "pull_request_review_comment", own)["mode"] == "skip"
 
 
 # --- conversations -----------------------------------------------------------------------------
@@ -129,7 +133,8 @@ def test_agreeing_reply_marks_the_thread_dismissed(repo: Path, monkeypatch: pyte
     assert "caller validates x" in prompts[0] and "<finding>" in prompts[0]
     method, path, body = calls[-1]
     assert (method, path) == ("POST", "/repos/o/r/pulls/7/comments/5/replies")
-    assert "@sam" not in body["body"] and github._markers(body["body"])[-1] == {"dismissed": True}
+    assert "@sam" not in body["body"] and {"dismissed": True} in github._markers(body["body"])
+    assert respond.OWN in body["body"]  # marked as duhview's own, so it is never answered
 
 
 def test_disagreeing_reply_does_not_dismiss(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:

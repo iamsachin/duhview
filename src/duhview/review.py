@@ -92,7 +92,8 @@ def _label(unit: dict[str, str]) -> str:
 async def run_review(root: Path, change: Change, cfg: Config, finder_model: str, verifier_model: str | None,
                      spec: Path | None, offline: bool = False, read_trusted: Reader | None = None,
                      archive_root: Path | None = None, summarize: bool = False,
-                     focus: str | None = None, description: str | None = None) -> ReviewResult:
+                     focus: str | None = None, description: str | None = None,
+                     known: str | None = None) -> ReviewResult:
     """`verifier_model=None` skips the verify pass. `read_trusted` supplies team rules and the
     false-positive filter (the PR base in PR mode); `archive_root` is where runs are saved.
     `summarize` also writes a short summary of the change for human reviewers."""
@@ -111,6 +112,11 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
     ctx = _fence("project_context", context) + "\n\n" if context else ""
     if description:  # the PR's title and body: what the change claims to do (untrusted, author-written)
         ctx += _fence("pull_request_description", description[:MAX_DESCRIPTION_CHARS]) + "\n\n"
+    if known:  # duhview's own open findings on this PR (seen live: restated in new words on every push)
+        ctx += _fence("already_reported", "duhview already reported these on this pull request:\n" + known
+                      + "\n\nIf one of them still exists, report it again with exactly the same title and its current"
+                      " lines; never restate it in other words. Report a different problem only if it is not"
+                      " covered by this list.") + "\n\n"
     if focus:  # from a maintainer's `@duhview review <focus>`: a request to look harder, not to look less
         ctx += _fence("review_request", f"A maintainer asked you to pay particular attention to: {focus}") + "\n\n"
     finder_sys, max_calls, timeout = _prompt("finder"), cfg.budget.max_tool_calls_per_agent, cfg.budget.agent_timeout_s

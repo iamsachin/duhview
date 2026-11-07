@@ -38,6 +38,9 @@ runs:
           esac
         }
         mentions() { field .comment.body | grep -qi '@duhview'; }
+        # duhview's own comments carry a hidden marker; with a personal token they are posted as the
+        # repo owner, so skip them here or duhview would answer itself.
+        own() { field .comment.body | grep -q '<!-- duhview'; }
         mode=skip
         case "$GITHUB_EVENT_NAME" in
           pull_request)
@@ -48,9 +51,9 @@ runs:
             fi ;;
           issue_comment)
             if [ "$(field .action)" = created ] && [ "$(field '.issue.pull_request != null')" = true ] \
-                && trusted && mentions; then mode=respond; fi ;;
+                && trusted && mentions && ! own; then mode=respond; fi ;;
           pull_request_review_comment)
-            if [ "$(field .action)" = created ] && trusted \
+            if [ "$(field .action)" = created ] && trusted && ! own \
                 && { mentions || [ "$(field '.comment.in_reply_to_id != null')" = true ]; }; then mode=respond; fi ;;
         esac
         scanners=false

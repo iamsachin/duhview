@@ -336,7 +336,10 @@ def _similar_titles(a: str, b: str) -> bool:
 
 def _same_issue(t: "Thread", f: Finding) -> bool:
     """Same place and category; and if the code there changed, also a similar title. Seen live: a
-    different problem near a fixed line was taken for the old one, hiding both."""
+    different problem near a fixed line was taken for the old one, hiding both. The reviewer is
+    asked to re-report open issues under their exact title, so that matches wherever the lines moved."""
+    if t.title and t.path == f.file and t.title.strip().lower() == _safe(f.title).strip().lower():
+        return True
     if not _same(t.path, t.line, t.category, f):
         return False
     return not (t.outdated or t.touched) or not t.title or _similar_titles(t.title, f.title)
@@ -416,6 +419,13 @@ def existing_threads(pr: PullRequest, tok: str) -> list[Thread]:
                               fixed_noted=any(m.get("fixed") for m in marks), title=str(root[0].get("title", "")),
                               dismissed=any(m.get("dismissed") for m in marks)))
     return threads
+
+
+def known_issues(pr: PullRequest, tok: str) -> str:
+    """duhview's open findings on this PR, for the reviewer to avoid restating them in new words."""
+    lines = [f"- {t.path}:{t.line} [{t.severity}] {t.title}" for t in existing_threads(pr, tok)
+             if not t.closed and not t.fixed_noted and t.title]
+    return "\n".join(lines)
 
 
 def mark_touched(root: Path, head: str, threads: list[Thread], remote: str = "origin") -> None:
