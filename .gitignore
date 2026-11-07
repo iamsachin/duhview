@@ -29,3 +29,6 @@ htmlcov/
 .vscode/
 *.swp
 Thumbs.db
+
+# Benchmark downloads and checkouts
+eval/.cache/

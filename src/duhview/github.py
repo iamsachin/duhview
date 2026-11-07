@@ -37,6 +37,8 @@ class PullRequest:
     base_sha: str
     head_sha: str
     head_repo: str  # "owner/name" the head branch lives in
+    title: str = ""
+    body: str = ""  # written by the PR author: untrusted
 
     @property
     def is_fork(self) -> bool:
@@ -102,7 +104,7 @@ def api_pages(path: str, tok: str) -> list[Any]:
 def get_pr(owner: str, repo: str, number: int, tok: str) -> PullRequest:
     d = api("GET", f"/repos/{owner}/{repo}/pulls/{number}", tok)
     return PullRequest(owner, repo, number, d["base"]["ref"], d["base"]["sha"], d["head"]["sha"],
-                       (d["head"].get("repo") or {}).get("full_name", ""))
+                       (d["head"].get("repo") or {}).get("full_name", ""), d.get("title") or "", d.get("body") or "")
 
 
 @contextmanager
