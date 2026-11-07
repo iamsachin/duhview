@@ -75,7 +75,8 @@ def _label(unit: dict[str, str]) -> str:
 
 async def run_review(root: Path, change: Change, cfg: Config, finder_model: str, verifier_model: str | None,
                      spec: Path | None, offline: bool = False, read_trusted: Reader | None = None,
-                     archive_root: Path | None = None, summarize: bool = False) -> ReviewResult:
+                     archive_root: Path | None = None, summarize: bool = False,
+                     focus: str | None = None) -> ReviewResult:
     """`verifier_model=None` skips the verify pass. `read_trusted` supplies team rules and the
     false-positive filter (the PR base in PR mode); `archive_root` is where runs are saved.
     `summarize` also writes a short summary of the change for human reviewers."""
@@ -92,6 +93,8 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
 
     context = project_context(root, cfg, list(change.files), spec, read_trusted)
     ctx = _fence("project_context", context) + "\n\n" if context else ""
+    if focus:  # from a maintainer's `@duhview review <focus>`: a request to look harder, not to look less
+        ctx += _fence("review_request", f"A maintainer asked you to pay particular attention to: {focus}") + "\n\n"
     finder_sys, max_calls, timeout = _prompt("finder"), cfg.budget.max_tool_calls_per_agent, cfg.budget.agent_timeout_s
 
     # --- find: one agent per review unit, in parallel, each with a share of the budget ---

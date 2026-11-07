@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -46,6 +47,7 @@ def review(
     json_out: Annotated[bool, typer.Option("--json", help="Print the result as JSON.")] = False,
     sarif: Annotated[Path | None, typer.Option(dir_okay=False, help="Also write a SARIF report here.")] = None,
     offline: Annotated[bool, typer.Option("--offline", help="Skip scanners that need the network.")] = False,
+    focus: Annotated[str | None, typer.Option(hidden=True, help="Extra focus requested by a maintainer.")] = None,
 ) -> None:
     """Review uncommitted changes (default), staged changes, a branch, a commit or a pull request.
 
@@ -84,18 +86,55 @@ def review(
         if not json_out:
             typer.echo(f"duhview: reviewing {len(change.files)} file(s) in {change.target} with {finder}…", err=True)
         result = asyncio.run(run_review(review_root, change, cfg, finder, verifier, spec, offline,
-                                        read_trusted=read_trusted, archive_root=root, summarize=post))
+                                        read_trusted=read_trusted, archive_root=root, summarize=post,
+                                        focus=focus))
         reports = write_reports(result, Path(result.archive_dir or "."))
         if sarif:
             shutil.copyfile(reports["sarif"], sarif)
         if post and pull:
             try:
-                typer.echo(f"duhview: {github.sync_review(pull, result, change, tok, review_root, resolve)}", err=True)
+                synced = github.sync_review(pull, result, change, tok, review_root, resolve)
             except GitHubError as e:
                 typer.echo(receipt(result, str(reports["md"])))
                 _fail(f"review finished but posting failed: {e}")
+            typer.echo(f"duhview: {synced.message}", err=True)
+            # Findings on threads a person resolved, or that duhview agreed were wrong, don't fail the check.
+            result = result.model_copy(update={"findings": synced.live})
         typer.echo(result.model_dump_json(indent=2) if json_out else receipt(result, str(reports["md"])))
         raise typer.Exit(exit_code(result, cfg.review.block_on_severity))
+
+
+@app.command(hidden=True)
+def respond(
+    event: Annotated[Path | None, typer.Option(help="Event payload (default: $GITHUB_EVENT_PATH).")] = None,
+    name: Annotated[str | None, typer.Option(help="Event name (default: $GITHUB_EVENT_NAME).")] = None,
+    resolve: Annotated[bool, typer.Option(help="For @duhview review: resolve fixed threads.")] = True,
+    model: Annotated[str | None, typer.Option(help="Model name (default: base branch config).")] = None,
+) -> None:
+    """Handle a PR comment event: `@duhview review`, `@duhview explain`, or a reply on a duhview thread."""
+    from duhview.respond import answer, parse_event
+
+    path = event or Path(os.environ.get("GITHUB_EVENT_PATH", ""))
+    req = parse_event(name or os.environ.get("GITHUB_EVENT_NAME", ""), json.loads(path.read_text()))
+    if req is None:
+        typer.echo("duhview: nothing to do for this comment")
+        raise typer.Exit(EXIT_CLEAN)
+    if req.kind == "review":
+        review(pr=str(req.pr_number), post=True, resolve=resolve, focus=req.text or None, model=model)
+    with ExitStack() as stack:
+        try:
+            root = repo_root(Path.cwd())
+            tok = github.token()
+            pull = github.get_pr(*github.parse_pr_ref(str(req.pr_number), root), tok)
+            wt = stack.enter_context(github.pr_checkout(root, pull))
+            read_trusted = revision_reader(root, pull.base_sha)
+            cfg = load_config(wt, read_trusted)
+            finder = resolve_model(model or cfg.model.name)
+            change = get_change(wt, Target(branch=pull.base_sha), cfg)
+            message = asyncio.run(answer(req, pull, change, wt, cfg, finder, tok, read_trusted, root))
+        except (GitError, GitHubError, ModelError, ValueError) as e:
+            _fail(str(e))
+    typer.echo(f"duhview: {message}")
 
 
 @app.command("hook-run", hidden=True)

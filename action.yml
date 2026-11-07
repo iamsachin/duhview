@@ -21,19 +21,51 @@ inputs:
 runs:
   using: composite
   steps:
-    # Fork PRs get no secrets on `pull_request`, and running fork code with secrets is unsafe.
-    - name: Skip unsupported events
-      if: github.event.pull_request.head.repo.full_name != github.repository
+    # Decide cheaply, before installing anything, whether this event is for duhview.
+    - name: Decide what to do
+      id: gate
       shell: bash
       run: |
-        echo "::notice::duhview skipped: it reviews pull requests from branches of this repository only (not forks)."
+        set -euo pipefail
+        ev="$GITHUB_EVENT_PATH"
+        field() { jq -r "$1" "$ev"; }
+        # Comments can trigger paid model calls, and comment workflows get secrets even on fork
+        # PRs: only the repo's owner, members and collaborators (never bots) may trigger duhview.
+        trusted() {
+          case "$(field .comment.author_association)" in
+            OWNER|MEMBER|COLLABORATOR) [ "$(field .comment.user.type)" != Bot ] ;;
+            *) false ;;
+          esac
+        }
+        mentions() { field .comment.body | grep -qi '@duhview'; }
+        mode=skip
+        case "$GITHUB_EVENT_NAME" in
+          pull_request)
+            if [ "$(field .pull_request.head.repo.full_name)" = "$GITHUB_REPOSITORY" ]; then
+              mode=review
+            else
+              echo "::notice::duhview skipped: pull requests from forks get no secrets; a maintainer can comment '@duhview review'."
+            fi ;;
+          issue_comment)
+            if [ "$(field .action)" = created ] && [ "$(field '.issue.pull_request != null')" = true ] \
+                && trusted && mentions; then mode=respond; fi ;;
+          pull_request_review_comment)
+            if [ "$(field .action)" = created ] && trusted \
+                && { mentions || [ "$(field '.comment.in_reply_to_id != null')" = true ]; }; then mode=respond; fi ;;
+        esac
+        scanners=false
+        if [ "$mode" = review ] || { [ "$mode" = respond ] && field .comment.body | grep -qiE '@duhview[[:space:]]+review'; }; then
+          scanners=true
+        fi
+        echo "mode=$mode" >> "$GITHUB_OUTPUT"
+        echo "scanners=$scanners" >> "$GITHUB_OUTPUT"
 
-    - if: github.event.pull_request.head.repo.full_name == github.repository
+    - if: steps.gate.outputs.mode != 'skip'
       uses: actions/setup-python@v5
       with:
         python-version: "3.12"
 
-    - if: github.event.pull_request.head.repo.full_name == github.repository
+    - if: steps.gate.outputs.mode != 'skip'
       shell: bash
       run: pip install --quiet "$ACTION_PATH"
       env:
@@ -41,7 +73,7 @@ runs:
 
     # Optional: if this fails, the review still runs and reports the scanners as skipped.
     - name: Install scanners (gitleaks, semgrep)
-      if: github.event.pull_request.head.repo.full_name == github.repository && inputs.scanners == 'true'
+      if: steps.gate.outputs.scanners == 'true' && inputs.scanners == 'true'
       continue-on-error: true
       shell: bash
       run: |
@@ -66,14 +98,20 @@ runs:
         echo "$sha  $file" | sha256sum -c -
         tar -xzf "$file" -C "$bin" gitleaks
 
-    - name: Review
-      if: github.event.pull_request.head.repo.full_name == github.repository
+    - name: Run duhview
+      if: steps.gate.outputs.mode != 'skip'
       shell: bash
       # Inputs go through env, never interpolated into the script.
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         DUHVIEW_MODEL: ${{ inputs.model }}
+        MODE: ${{ steps.gate.outputs.mode }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         # The default token cannot resolve review threads; a token you pass in may.
         DUHVIEW_RESOLVE: ${{ inputs.github-token != github.token && '--resolve' || '--no-resolve' }}
-      run: duhview review --pr "$PR_NUMBER" --post "$DUHVIEW_RESOLVE" ${DUHVIEW_MODEL:+--model "$DUHVIEW_MODEL"}
+      run: |
+        if [ "$MODE" = review ]; then
+          duhview review --pr "$PR_NUMBER" --post "$DUHVIEW_RESOLVE" ${DUHVIEW_MODEL:+--model "$DUHVIEW_MODEL"}
+        else
+          duhview respond "$DUHVIEW_RESOLVE" ${DUHVIEW_MODEL:+--model "$DUHVIEW_MODEL"}
+        fi

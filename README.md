@@ -98,12 +98,31 @@ In PR mode, `.duhview/config.yaml`, `.duhview/rules.md` and `.duhview/fp-filter.
 from the **base branch**, so a pull request cannot weaken its own review. Changes it makes to
 those files are reviewed like any other change.
 
+### Talking to duhview on a pull request
+
+Repo owners, members and collaborators can comment:
+
+- `@duhview review` (optionally `@duhview review focus on auth`): review the PR now.
+- `@duhview explain <question>`: ask about the PR's code; duhview reads the code and answers.
+- A reply on one of duhview's comments ("this is intended because…"): duhview re-checks the code
+  and answers. If it agrees the finding was wrong, it says so and stops raising it on this PR.
+
+Findings on threads that duhview agreed were wrong, or that a person resolved, no longer fail
+the check. Comments from anyone else (and from bots) are ignored, since each one costs a model
+call. To enable this, add `issue_comment` and `pull_request_review_comment` (types `created`) to
+the workflow's triggers, as below.
+
 To review every pull request automatically, add your model API key as a repository secret
 (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) and this workflow:
 
 ```yaml
 name: duhview
-on: pull_request
+on:
+  pull_request:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
 permissions:
   contents: read
   pull-requests: write

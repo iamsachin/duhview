@@ -219,7 +219,7 @@ def test_sync_rerun_posts_nothing_new_but_resolves_fixed(monkeypatch: pytest.Mon
     monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
     monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
-    msg = github.sync_review(pr, _result(_f(20, 20)), CHANGE, "tok", Path("."))
+    msg = github.sync_review(pr, _result(_f(20, 20)), CHANGE, "tok", Path(".")).message
     assert "nothing new to post" in msg and "1 fixed" in msg
     assert ("POST", "/repos/o/r/pulls/1/comments/100/replies") in calls  # "fixed" reply
     assert ("POST", "/graphql") in calls  # resolve
@@ -246,7 +246,7 @@ def test_sync_survives_failed_thread_updates_and_never_repeats_the_fixed_note(
     monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     monkeypatch.setattr(github, "api", fake_api)
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
-    msg = github.sync_review(pr, _result(_f(20, 20, "brand new")), CHANGE, "tok", Path("."))
+    msg = github.sync_review(pr, _result(_f(20, 20, "brand new")), CHANGE, "tok", Path(".")).message
     assert msg.startswith("posted 1 new finding(s)")
     assert "2 fixed (0 resolved)" in msg and "not be allowed to resolve" in msg
     assert sum(p.endswith("/replies") for _, p in calls) == 1  # only the thread not yet told
@@ -268,7 +268,7 @@ def test_without_resolve_it_notes_fixed_and_skips_the_resolve_call(monkeypatch: 
     monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     monkeypatch.setattr(github, "api", fake_api)
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
-    msg = github.sync_review(pr, _result(), CHANGE, "tok", Path("."), resolve=False)
+    msg = github.sync_review(pr, _result(), CHANGE, "tok", Path("."), resolve=False).message
     assert "1 fixed (noted)" in msg and "/graphql" not in calls and "warning" not in msg
     assert "Resolve this thread if you agree." in bodies[0]
 

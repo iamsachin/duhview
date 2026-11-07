@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -269,6 +269,12 @@ class Thread:
     touched: bool = False  # code within MATCH_LINES of the comment changed since `commit`
     fixed_noted: bool = False  # duhview already replied that it looks fixed
     title: str = ""  # the finding's title when it was posted
+    dismissed: bool = False  # duhview agreed in the thread that the finding was wrong
+
+    @property
+    def closed(self) -> bool:
+        """A person resolved it, or duhview was convinced it was wrong."""
+        return self.resolved or self.dismissed
 
 
 @dataclass
@@ -285,6 +291,7 @@ class SyncPlan:
     worse: list[tuple[Thread, Finding]]
     fixed: list[Thread]
     open: int  # earlier threads still open after this run
+    closed: list[Finding] = field(default_factory=list)  # current findings on resolved/dismissed threads
 
 
 def _same(path: str, line: int | None, category: str, f: Finding) -> bool:
@@ -318,18 +325,21 @@ def plan_sync(r: ReviewResult, change: Change, threads: list[Thread], listed: li
     used: set[str] = set()
     new: list[Finding] = []
     worse: list[tuple[Thread, Finding]] = []
+    closed: list[Finding] = []
     for f in r.findings:
         t = next((t for t in threads if t.id not in used and _same_issue(t, f)), None)
         if t is not None:
             used.add(t.id)
-            if not t.resolved and f.severity.rank < t.severity.rank:
+            if t.closed:
+                closed.append(f)
+            elif f.severity.rank < t.severity.rank:
                 worse.append((t, f))
         elif not any(_same(x.path, x.line, x.category, f) for x in listed):
             new.append(f)
-    unresolved = [t for t in threads if not t.resolved]
+    unresolved = [t for t in threads if not t.closed]
     fixed = [] if r.incomplete else [t for t in unresolved if t.id not in used
                                      and (t.outdated or t.touched or t.path not in change.files)]
-    return SyncPlan(new, worse, fixed, len(unresolved) - len(fixed))
+    return SyncPlan(new, worse, fixed, len(unresolved) - len(fixed), closed)
 
 
 _RESOLVE = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id } } }"
@@ -379,7 +389,8 @@ def existing_threads(pr: PullRequest, tok: str) -> list[Thread]:
         threads.append(Thread(n["id"], comments[0]["databaseId"], n["path"], n["line"] or n["originalLine"],
                               root[0].get("cat", ""), min(sevs, key=lambda s: s.rank), n["isResolved"],
                               n["isOutdated"], (comments[0].get("originalCommit") or {}).get("oid", ""),
-                              fixed_noted=any(m.get("fixed") for m in marks), title=str(root[0].get("title", ""))))
+                              fixed_noted=any(m.get("fixed") for m in marks), title=str(root[0].get("title", "")),
+                              dismissed=any(m.get("dismissed") for m in marks)))
     return threads
 
 
@@ -387,7 +398,7 @@ def mark_touched(root: Path, head: str, threads: list[Thread]) -> None:
     """A fix often adds lines next to the flagged one (a guard above it) without editing it, which
     GitHub does not count as outdated. Check the diff since the comment's commit around its line."""
     for t in threads:
-        if t.resolved or t.outdated or t.line is None or not t.commit:
+        if t.closed or t.outdated or t.line is None or not t.commit:
             continue
         try:
             if git(root, "cat-file", "-t", t.commit, check=False).strip() != "commit":
@@ -422,14 +433,16 @@ def _state(body: str) -> dict[str, Any]:
 
 
 def summary_body(pr: PullRequest, r: ReviewResult, summary: PRSummary | None, fixed: int,
-                 review_url: str) -> str:
+                 review_url: str, live: list[Finding] | None = None) -> str:
+    """`live`: findings still open (not on resolved or dismissed threads); default all."""
+    live = r.findings if live is None else live
     out = [SUMMARY_MARKER, "## 📝 duhview summary", ""]
     if summary:
         out += [_safe(summary.overview), "", "**What changed**", *(f"- {_safe(c)}" for c in summary.changes),
                 "", f"**Review focus:** {_safe(summary.focus)}"]
     else:
         out.append("_No summary yet._")
-    counts = [f"{_BADGE[s]} {n}" for s in Severity if (n := sum(f.severity == s for f in r.findings))]
+    counts = [f"{_BADGE[s]} {n}" for s in Severity if (n := sum(f.severity == s for f in live))]
     status = " · ".join(counts) + " open" if counts else "✅ no open issues"
     if fixed:
         status += f" · {fixed} fixed"
@@ -445,13 +458,14 @@ def summary_body(pr: PullRequest, r: ReviewResult, summary: PRSummary | None, fi
     return "\n".join(out) + f"\n<!-- duhview-state:{state.replace('>', '\\u003e')} -->"
 
 
-def upsert_summary(pr: PullRequest, r: ReviewResult, fixed: int, review_url: str, tok: str) -> str:
+def upsert_summary(pr: PullRequest, r: ReviewResult, fixed: int, review_url: str, tok: str,
+                   live: list[Finding] | None = None) -> str:
     """Create the summary comment, or edit the existing one in place."""
     comments = api_pages(f"/repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments", tok)
     existing = next((c for c in comments if SUMMARY_MARKER in (c.get("body") or "")), None)
     old = _state(existing["body"]) if existing else {}
     summary = r.summary or (PRSummary.model_validate(old["summary"]) if old.get("summary") else None)
-    body = summary_body(pr, r, summary, fixed, review_url or old.get("review", ""))
+    body = summary_body(pr, r, summary, fixed, review_url or old.get("review", ""), live)
     if existing:
         api("PATCH", f"/repos/{pr.owner}/{pr.repo}/issues/comments/{existing['id']}", tok, {"body": body})
         return "summary updated"
@@ -459,14 +473,21 @@ def upsert_summary(pr: PullRequest, r: ReviewResult, fixed: int, review_url: str
     return "summary posted"
 
 
+@dataclass
+class SyncResult:
+    message: str
+    live: list[Finding]  # findings not on a resolved or dismissed thread: what the check should count
+
+
 def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root: Path,
-                resolve: bool = True) -> str:
+                resolve: bool = True) -> SyncResult:
     """Post new findings, reply on threads that got worse, note (and, if `resolve`, resolve) threads
     that were fixed. `root` is a checkout containing the PR's commits. The default Actions token
     cannot resolve threads, so the Action passes resolve=False and leaves that click to a person."""
     threads = existing_threads(pr, tok)
     mark_touched(root, pr.head_sha, threads)
     plan = plan_sync(r, change, threads, listed_findings(pr, tok))
+    live = [f for f in r.findings if f not in plan.closed]
     done: list[str] = []
     review_url = ""
     if plan.new:
@@ -508,11 +529,11 @@ def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root
         done.append(f"{len(plan.fixed)} fixed ({resolved} resolved)" if resolve else f"{len(plan.fixed)} fixed (noted)")
     fixed_so_far = sum(t.fixed_noted for t in threads) + sum(not t.fixed_noted for t in plan.fixed)
     try:
-        done.append(upsert_summary(pr, r, fixed_so_far, review_url, tok))
+        done.append(upsert_summary(pr, r, fixed_so_far, review_url, tok, live))
     except GitHubError as e:
         failed.append(f"summary: {e}")
     if failed:
         hint = (" (the token may not be allowed to resolve review threads)"
                 if any("not accessible" in f for f in failed) else "")
         done.append(f"warning: {len(failed)} thread update(s) failed{hint}: {failed[0]}")
-    return "; ".join(done)
+    return SyncResult("; ".join(done), live)
