@@ -20,7 +20,10 @@ class BudgetExceeded(Exception):
 
 
 def resolve_model(name: str) -> str:
-    """Infer the provider from a model name; return the provider-qualified name."""
+    """Infer the provider from a model name; return the provider-qualified name. A comma-separated
+    list (several finder models) resolves each and stays comma-separated."""
+    if "," in name:
+        return ",".join(resolve_model(n.strip()) for n in name.split(",") if n.strip())
     try:
         model, provider, _, _ = litellm.get_llm_provider(name)
     except Exception as e:

@@ -166,6 +166,8 @@ def _heading(f: Finding) -> str:
     tags = [f"**{_BADGE[f.severity]}**", str(f.category).capitalize()]
     if f.source != "agent":
         tags.append(f"found by {f.source.removeprefix('scanner:')}")
+    elif len(f.models) > 1:
+        tags.append(f"found by {len(f.models)} models")
     return " · ".join(tags)
 
 

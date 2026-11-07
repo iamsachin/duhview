@@ -30,6 +30,10 @@ duhview review --pr 42 --post        # review a GitHub PR and post the result on
 
 Default model: `claude-sonnet-5-5`. Only Anthropic and OpenAI models are supported.
 
+Several finder models: `--model claude-sonnet-5-5,gpt-5.5` (or the same in config). Each model
+reviews every part of the change; findings are merged, and ones both models raised are marked
+"found by 2 models" and listed first. It costs roughly the sum of the models.
+
 The verify pass is off by default. With a strong model it adds cost without improving precision;
 with a cheaper finder model it removes most false positives. Turn it on with `--verifier-model`.
 

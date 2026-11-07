@@ -56,6 +56,7 @@ class Finding(FindingDraft):
     source: str = "agent"
     verified: bool = False
     confidence: float = Field(default=0.0, ge=0, le=1)
+    models: list[str] = []  # finder models that raised it (more than one = they agree)
 
     @classmethod
     def from_draft(cls, d: FindingDraft, source: str = "agent") -> "Finding":

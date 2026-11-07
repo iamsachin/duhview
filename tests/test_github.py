@@ -105,6 +105,9 @@ def test_comment_and_summary_formatting() -> None:
     review = github.build_review(_result(scanner, _f(40, 40, "far away")), Change("PR #1", {"a.py": DIFF}))
     (c,) = review["comments"]
     assert c["body"].startswith("**🔴 Critical** · Security · found by gitleaks\n\n**key**")
+    agreed = _f(11, 11).model_copy(update={"models": ["a", "b"]})
+    body = github.build_review(_result(agreed), Change("PR #1", {"a.py": DIFF}))["comments"][0]["body"]
+    assert body.startswith("**🟠 Major** · Bug · found by 2 models")
     body = review["body"]
     assert "| 🔴 Critical | 🟠 Major |" in body and "| 1 | 1 |" in body
     assert "<details><summary>Findings outside the diff (1)</summary>" in body and "far away" in body

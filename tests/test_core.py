@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -136,3 +137,55 @@ def test_litellm_tool_calling_path_imports() -> None:
     r = asyncio.run(litellm.acompletion(model="openai/gpt-5.5", messages=[{"role": "user", "content": "hi"}],
                                         tools=tools, mock_response="ok", api_key="x"))
     assert r.choices[0].message.content == "ok"
+
+
+# --- several finder models ---------------------------------------------------------------------
+
+
+def test_resolve_a_list_of_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    assert model.resolve_model("claude-sonnet-5-5, gpt-5.5") == "anthropic/claude-sonnet-5-5,openai/gpt-5.5"
+    with pytest.raises(model.ModelError):
+        model.resolve_model("claude-sonnet-5-5,gemini-2.5-pro")
+
+
+def test_two_finder_models_are_merged_with_agreement(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from duhview.config import Config
+    from duhview.review import run_review
+
+    def draft(line: int, title: str, severity: str = "major") -> dict[str, Any]:
+        return {"file": "src/app.py", "start_line": line, "end_line": line, "severity": severity,
+                "category": "bug", "title": title, "explanation": "e"}
+
+    answers = {"A": [draft(9, "only A sees this"), draft(1, "both see this")],
+               "B": [draft(1, "both, worded differently")]}
+
+    async def fake_complete(m: str, messages: list[dict[str, Any]], tools: Any, budget: Any) -> Any:
+        return _resp(content=json.dumps({"findings": answers[m]}))
+
+    monkeypatch.setattr(model, "complete", fake_complete)
+    (repo / "src" / "app.py").write_text("def add(a, b):\n    return a - b\n")
+    cfg = Config(scanners=[])
+    result = asyncio.run(run_review(repo, get_change(repo, Target(), cfg), cfg, "A,B", None, None))
+    assert [(f.title, f.models) for f in result.findings] == [
+        ("both see this", ["A", "B"]),  # agreed findings come first within a severity
+        ("only A sees this", ["A"]),
+    ]
+    assert result.model == "A,B"
+
+
+def test_cross_model_duplicates_merge_within_a_wider_window() -> None:
+    """Seen live on a real repo: two models flagged the same bug at lines 376 and 381."""
+    from duhview.review import _dedupe
+
+    def f(line: int, title: str, m: str) -> Finding:
+        return Finding.from_draft(FindingDraft(file="Page.vue", start_line=line, end_line=line, severity="major",
+                                               category="bug", title=title, explanation="e")).model_copy(
+            update={"models": [m]})
+
+    merged = _dedupe([f(381, "chips can't jump to batched sub-agents", "sonnet"),
+                      f(376, "chip-strip jump fails for collapsed sub-agents", "gpt")])
+    assert [x.models for x in merged] == [["sonnet", "gpt"]]
+    # One model's own findings 5 lines apart stay separate.
+    assert len(_dedupe([f(381, "a", "sonnet"), f(376, "b", "sonnet")])) == 2

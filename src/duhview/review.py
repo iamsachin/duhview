@@ -45,13 +45,28 @@ async def _retry_once[T](fn: Callable[[], Awaitable[T]], timeout_s: int) -> T:
     raise AssertionError("unreachable")
 
 
+SAME_MODEL_LINES = 2
+CROSS_MODEL_LINES = 5  # different models cite the same bug a few lines apart (seen live: 376 vs 381)
+
+
+def _same_spot(a: Finding, b: Finding) -> bool:
+    if a.file != b.file or a.category != b.category:
+        return False
+    if a.models and b.models and not set(a.models) & set(b.models):
+        return a.start_line - CROSS_MODEL_LINES <= b.end_line and b.start_line - CROSS_MODEL_LINES <= a.end_line
+    return abs(a.start_line - b.start_line) <= SAME_MODEL_LINES
+
+
 def _dedupe(findings: list[Finding]) -> list[Finding]:
-    """Keep the most severe of findings on the same spot; on ties, the earlier one."""
+    """Keep the most severe of findings on the same spot; on ties, the earlier one. The kept finding
+    records every finder model that raised the same spot."""
     kept: list[Finding] = []
     for f in sorted(findings, key=lambda f: f.severity.rank):  # stable sort keeps input order on ties
-        if not any(k.file == f.file and k.category == f.category and abs(k.start_line - f.start_line) <= 2
-                   for k in kept):
-            kept.append(f)
+        k = next((k for k in kept if _same_spot(k, f)), None)
+        if k is None:
+            kept.append(f.model_copy(update={"models": list(f.models)}))
+        else:
+            k.models += [m for m in f.models if m not in k.models]
     return kept
 
 
@@ -101,10 +116,14 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
     units = review_units(change)
     pool = (cfg.budget.max_usd_per_review * BUDGET_SAFETY_MARGIN
             * (FINDER_BUDGET_SHARE_WITH_VERIFY if verifier_model else 1.0))
-    share = pool / len(units) if units else pool
+    finders = finder_model.split(",")  # several models: each reviews every unit; findings are merged
+    share = pool / (max(len(units), 1) * len(finders))
     find_sem = asyncio.Semaphore(FINDER_CONCURRENCY)
 
-    async def find(unit: dict[str, str]) -> list[FindingDraft]:
+    async def find(unit: dict[str, str], fm: str) -> list[Finding]:
+        return [Finding.from_draft(d).model_copy(update={"models": [fm]}) for d in await find_drafts(unit, fm)]
+
+    async def find_drafts(unit: dict[str, str], finder_model: str) -> list[FindingDraft]:
         parts = [ctx]
         leads = [f"- {f.file}:{f.start_line} {f.title}" for f in scanner_findings if f.file in unit]
         if leads:
@@ -115,7 +134,7 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
             parts.append("Other files in this change are reviewed separately; read them if relevant: "
                          + ", ".join(others[:200]) + "\n\n")
         parts.append(_fence("untrusted_diff", "".join(unit.values())))
-        user, label = "".join(parts), _label(unit)
+        user, label = "".join(parts), _label(unit) + (f" [{finder_model}]" if len(finders) > 1 else "")
         async with find_sem:
             try:
                 out = await _retry_once(lambda: ask_json(finder_model, finder_sys, user, FinderOutput, tools,
@@ -136,10 +155,10 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
                 return []
 
     # The summary needs no tools, so it runs alongside the finders.
-    summary_task = asyncio.create_task(_summarize(change, finder_model, budget, log, timeout)) if summarize else None
-    drafts = [d for ds in await asyncio.gather(*(find(u) for u in units)) for d in ds]
+    summary_task = asyncio.create_task(_summarize(change, finders[0], budget, log, timeout)) if summarize else None
+    found = [f for fs in await asyncio.gather(*(find(u, fm) for u in units for fm in finders)) for f in fs]
     # Agent findings first so, on ties, the agent's fuller explanation wins over the scanner's.
-    candidates = _dedupe([Finding.from_draft(d) for d in drafts] + scanner_findings)
+    candidates = _dedupe(found + scanner_findings)
 
     # --- verify (agent findings only; scanner findings are deterministic) ---
     verify_sem = asyncio.Semaphore(VERIFY_CONCURRENCY)
@@ -170,7 +189,9 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
         incomplete.append(f"verify: {unverified} finding(s) could not be verified")
 
     min_rank = cfg.review.min_severity.rank
-    findings = sorted((f for f in results if f and f.severity.rank <= min_rank), key=lambda f: f.severity.rank)
+    # Within a severity, findings several models agree on come first.
+    findings = sorted((f for f in results if f and f.severity.rank <= min_rank),
+                      key=lambda f: (f.severity.rank, -len(f.models)))
     summary = None
     if summary_task is not None:
         try:

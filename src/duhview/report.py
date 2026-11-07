@@ -23,7 +23,8 @@ def _cost(r: ReviewResult) -> str:
 def _provenance(f: Finding) -> str:
     if f.source != "agent":
         return f.source
-    return f"verified ({f.confidence:.0%})" if f.verified else "agent"
+    agree = f" · found by {len(f.models)} models" if len(f.models) > 1 else ""
+    return (f"verified ({f.confidence:.0%})" if f.verified else "agent") + agree
 
 
 def to_markdown(r: ReviewResult) -> str:
