@@ -54,10 +54,31 @@ def parse_pr_ref(ref: str, root: Path) -> tuple[str, str, int]:
     if full := os.environ.get("GITHUB_REPOSITORY"):
         owner, repo = full.split("/", 1)
         return owner, repo, int(ref.lstrip("#"))
-    remote = git(root, "remote", "get-url", "origin", check=False).strip()
-    if not (m := _REMOTE.search(remote)):
+    repos = [r for _, r in _github_remotes(root)]
+    if len(set(repos)) != 1:  # none, or several different GitHub repos (e.g. a fork and upstream)
         raise GitHubError("cannot tell which GitHub repo this is; pass the full PR URL")
-    return m.group(1), m.group(2), int(ref.lstrip("#"))
+    owner, repo = repos[0]
+    return owner, repo, int(ref.lstrip("#"))
+
+
+def _github_remotes(root: Path) -> list[tuple[str, tuple[str, str]]]:
+    """(remote name, (owner, repo)) for every remote that points at GitHub; `origin` first."""
+    names = git(root, "remote", check=False).split()
+    out = []
+    for name in sorted(names, key=lambda n: n != "origin"):
+        if m := _REMOTE.search(git(root, "remote", "get-url", name, check=False).strip()):
+            out.append((name, (m.group(1), m.group(2))))
+    return out
+
+
+def find_remote(root: Path, owner: str, repo: str) -> str:
+    """The remote for owner/repo, whatever it is called (`origin`, `upstream`, ...)."""
+    for name, (o, r) in _github_remotes(root):
+        if (o.lower(), r.lower()) == (owner.lower(), repo.lower()):
+            return name
+    if "origin" in git(root, "remote", check=False).split():
+        return "origin"  # e.g. GitHub Enterprise or a mirror URL we can't match by name
+    raise GitHubError(f"no git remote points at github.com/{owner}/{repo}; add one with `git remote add`")
 
 
 def token() -> str:
@@ -110,8 +131,7 @@ def get_pr(owner: str, repo: str, number: int, tok: str) -> PullRequest:
 @contextmanager
 def pr_checkout(root: Path, pr: PullRequest) -> Iterator[Path]:
     """Fetch the PR and check its head out into a temporary worktree; the user's checkout is untouched."""
-    # shortcut: assumes the remote is named `origin`; add a --remote option if someone needs another.
-    git(root, "fetch", "--no-tags", "origin",
+    git(root, "fetch", "--no-tags", find_remote(root, pr.owner, pr.repo),
         f"+refs/pull/{pr.number}/head:refs/duhview/pr/{pr.number}/head",
         f"+refs/heads/{pr.base_ref}:refs/duhview/pr/{pr.number}/base", timeout=FETCH_TIMEOUT_S)
     for sha in (pr.base_sha, pr.head_sha):
@@ -398,7 +418,7 @@ def existing_threads(pr: PullRequest, tok: str) -> list[Thread]:
     return threads
 
 
-def mark_touched(root: Path, head: str, threads: list[Thread]) -> None:
+def mark_touched(root: Path, head: str, threads: list[Thread], remote: str = "origin") -> None:
     """A fix often adds lines next to the flagged one (a guard above it) without editing it, which
     GitHub does not count as outdated. Check the diff since the comment's commit around its line."""
     for t in threads:
@@ -408,7 +428,7 @@ def mark_touched(root: Path, head: str, threads: list[Thread]) -> None:
             if git(root, "cat-file", "-t", t.commit, check=False).strip() != "commit":
                 # After a rebase or force-push the comment's commit is no longer on the branch;
                 # GitHub still serves it by hash.
-                git(root, "fetch", "--no-tags", "origin", t.commit, timeout=FETCH_TIMEOUT_S)
+                git(root, "fetch", "--no-tags", remote, t.commit, timeout=FETCH_TIMEOUT_S)
             added = hunk_lines(git(root, "diff", t.commit, head, "--", t.path))[0]
         except GitError:
             continue  # commit not available: stay conservative, leave the thread open
@@ -489,7 +509,11 @@ def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root
     that were fixed. `root` is a checkout containing the PR's commits. The default Actions token
     cannot resolve threads, so the Action passes resolve=False and leaves that click to a person."""
     threads = existing_threads(pr, tok)
-    mark_touched(root, pr.head_sha, threads)
+    try:
+        remote = find_remote(root, pr.owner, pr.repo)
+    except GitHubError:
+        remote = "origin"  # only used to fetch commits a rebase removed: best effort
+    mark_touched(root, pr.head_sha, threads, remote)
     plan = plan_sync(r, change, threads, listed_findings(pr, tok))
     live = [f for f in r.findings if f not in plan.closed]
     done: list[str] = []

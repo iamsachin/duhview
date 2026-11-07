@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -112,23 +113,18 @@ class RepoTools:
         rel = self._rel(path)
         if not regex:
             return self._git_grep(pattern, rel)
-        # shortcut: regex mode scans files in Python (git grep's regex dialect differs by platform), and a
-        # pathological regex can stall this worker thread past the timeout; move to a subprocess if seen.
-        rx = re.compile(pattern)
-        hits: list[str] = []
-        for f in self._under(rel):
-            p = self.root / f
-            if not p.is_file() or p.stat().st_size > MAX_GREP_FILE_BYTES:
-                continue
-            data = p.read_bytes()
-            if b"\0" in data[:8000]:
-                continue
-            for i, line in enumerate(data.decode(errors="replace").splitlines(), 1):
-                if rx.search(line):
-                    hits.append(f"{f}:{i}: {line[:300]}")
-                    if len(hits) >= 200:
-                        return "\n".join(hits) + "\n... (truncated at 200 matches)"
-        return "\n".join(hits) or "no matches"
+        re.compile(pattern)  # report a bad pattern as a normal tool error
+        # Python regex semantics (git grep's dialect differs by platform), run in a child process that
+        # is killed on timeout: a pathological pattern can't be stopped inside a thread.
+        job = json.dumps({"pattern": pattern, "root": str(self.root), "files": self._under(rel)})
+        try:
+            r = subprocess.run([sys.executable, "-c", "from duhview.tools import _regex_scan; _regex_scan()"],
+                               input=job, capture_output=True, text=True, timeout=TOOL_TIMEOUT_S, check=False)
+        except subprocess.TimeoutExpired as e:
+            raise ToolError("regex search timed out; simplify the pattern or narrow it with `path`") from e
+        if r.returncode != 0:
+            raise ToolError(r.stderr.strip()[-300:] or "regex search failed")
+        return r.stdout or "no matches"
 
     def _git_grep(self, text: str, rel: str) -> str:
         """Literal search with git grep: fast on very large repos, and killable on timeout."""
@@ -186,9 +182,29 @@ class RepoTools:
             return f"error: unknown tool {name}"
         try:
             args = json.loads(arguments or "{}")
-            out = await asyncio.wait_for(asyncio.to_thread(fn, **args), TOOL_TIMEOUT_S)
+            out = await asyncio.wait_for(asyncio.to_thread(fn, **args), TOOL_TIMEOUT_S + 2)  # inner timeouts fire first
         except TimeoutError:
             return f"error: {name} timed out"
         except (ToolError, GitError, CodeGraphError, TypeError, ValueError, re.error, OSError) as e:
             return f"error: {e}"
         return out[:MAX_OUTPUT_CHARS] + ("\n... (output truncated)" if len(out) > MAX_OUTPUT_CHARS else "")
+
+
+def _regex_scan() -> None:
+    """Child-process half of regex grep: reads the job from stdin, prints `path:line: text` hits."""
+    job = json.loads(sys.stdin.read())
+    rx, root, hits = re.compile(job["pattern"]), Path(job["root"]), 0
+    for f in job["files"]:
+        p = root / f
+        if not p.is_file() or p.stat().st_size > MAX_GREP_FILE_BYTES:
+            continue
+        data = p.read_bytes()
+        if b"\0" in data[:8000]:
+            continue
+        for i, line in enumerate(data.decode(errors="replace").splitlines(), 1):
+            if rx.search(line):
+                print(f"{f}:{i}: {line[:300]}")
+                hits += 1
+                if hits >= MAX_GREP_HITS:
+                    print(f"... (truncated at {MAX_GREP_HITS} matches)")
+                    return

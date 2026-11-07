@@ -39,6 +39,10 @@ with a cheaper finder model it removes most false positives. Turn it on with `--
 
 Exit codes: `0` clean · `1` findings at or above `block_on_severity` · `2` review incomplete · `3` error.
 
+The budget is a hard cap: each model call reserves its worst-case cost (input plus at most
+12,000 output tokens) before it is sent, so parallel agents cannot jointly cross it. When the
+next call would not fit, duhview stops and reports which parts it did not review.
+
 Each run is archived (prompts, model output, rejected findings, and the report as Markdown, JSON
 and SARIF) in `.duhview/runs/`, which ignores itself in git.
 
@@ -101,6 +105,24 @@ back more severe gets a reply on its thread, and fixed ones are noted.
 In PR mode, `.duhview/config.yaml`, `.duhview/rules.md` and `.duhview/fp-filter.md` are read
 from the **base branch**, so a pull request cannot weaken its own review. Changes it makes to
 those files are reviewed like any other change.
+
+### Making the review required
+
+The duhview check only enforces anything if GitHub requires it, and someone with write access
+can edit the workflow file in their own pull request. To close both:
+
+1. In a branch ruleset (or branch protection) for your default branch, require the `review`
+   status check and require pull request reviews.
+2. Add a `CODEOWNERS` file so changes to the workflow and to duhview's settings need an owner's
+   approval, and enable "Require review from Code Owners":
+
+   ```
+   /.github/workflows/  @your-org/maintainers
+   /.duhview/           @your-org/maintainers
+   ```
+
+duhview already reads its config, rules and false-positive filter from the base branch, so a
+pull request cannot weaken those for its own review; the steps above cover the workflow itself.
 
 ### Talking to duhview on a pull request
 

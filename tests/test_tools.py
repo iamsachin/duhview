@@ -69,3 +69,15 @@ def test_call_reports_errors_instead_of_raising(repo: Path) -> None:
     assert call(t, "nope", "{}").startswith("error: unknown tool")
     assert call(t, "read_file", '{"bad_arg": 1}').startswith("error:")
     assert call(t, "grep", '{"pattern": "(", "regex": true}').startswith("error:")
+
+
+def test_pathological_regex_is_killed_not_left_running(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from duhview import tools
+
+    (repo / "slow.txt").write_text("a" * 40 + "!\n")
+    monkeypatch.setattr(tools, "TOOL_TIMEOUT_S", 1)
+    start = time.monotonic()
+    out = call(RepoTools(repo), "grep", '{"pattern": "(a+)+$", "regex": true}')
+    assert out.startswith("error: regex search timed out") and time.monotonic() - start < 5

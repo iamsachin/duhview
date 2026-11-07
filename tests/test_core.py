@@ -189,3 +189,51 @@ def test_cross_model_duplicates_merge_within_a_wider_window() -> None:
     assert [x.models for x in merged] == [["sonnet", "gpt"]]
     # One model's own findings 5 lines apart stay separate.
     assert len(_dedupe([f(381, "a", "sonnet"), f(376, "b", "sonnet")])) == 2
+
+
+# --- the hard cost cap -----------------------------------------------------------------------
+
+
+def test_parallel_calls_never_jointly_cross_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    import litellm
+
+    peak: list[float] = []
+    budget = model.Budget(1.0)
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        assert kwargs["max_tokens"] == model.MAX_OUTPUT_TOKENS  # each call's output is bounded
+        await asyncio.sleep(0.01)
+        return "response"
+
+    def fake_cost(response: Any) -> float:
+        return 0.3
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(model, "worst_case_cost", lambda m, msgs, tools: 0.4)
+    monkeypatch.setattr(model, "cost_of", fake_cost)
+
+    async def one() -> str:
+        try:
+            await model.complete("m", [], None, budget)
+            peak.append(budget.spent + budget.reserved)
+            return "ok"
+        except model.BudgetExceeded:
+            return "refused"
+
+    async def main() -> list[str]:
+        return list(await asyncio.gather(*(one() for _ in range(4))))
+
+    results = asyncio.run(main())
+    assert sorted(results) == ["ok", "ok", "ok", "refused"]
+    assert budget.spent == pytest.approx(0.9) and budget.reserved == 0
+    assert max(peak) <= 1.0  # spent + in flight never exceeded the cap
+
+
+def test_worst_case_cost_needs_a_known_price() -> None:
+    msgs = [{"role": "user", "content": "hello " * 50}]
+    import litellm
+
+    est = model.worst_case_cost("anthropic/claude-sonnet-5-5", msgs, None)
+    out_price = litellm.model_cost["claude-sonnet-5-5"]["output_cost_per_token"]
+    assert est is not None and est > model.MAX_OUTPUT_TOKENS * out_price  # max output plus some input
+    assert model.worst_case_cost("openai/not-a-real-model", msgs, None) is None

@@ -28,6 +28,19 @@ def test_parse_pr_ref(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         github.parse_pr_ref("feature-branch", repo)
 
 
+def test_remote_is_found_by_url_not_name(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    subprocess.run(["git", "remote", "add", "upstream", "https://github.com/acme/web.git"], cwd=repo, check=True)
+    assert github.find_remote(repo, "ACME", "web") == "upstream"
+    assert github.parse_pr_ref("7", repo) == ("acme", "web", 7)  # the only GitHub remote
+    subprocess.run(["git", "remote", "add", "fork", "git@github.com:me/web.git"], cwd=repo, check=True)
+    assert github.find_remote(repo, "me", "web") == "fork"
+    with pytest.raises(github.GitHubError, match="pass the full PR URL"):
+        github.parse_pr_ref("7", repo)  # two different repos: ambiguous
+    with pytest.raises(github.GitHubError, match="no git remote"):
+        github.find_remote(repo, "other", "thing")
+
+
 def test_hunk_lines_shown_includes_context() -> None:
     diff = "@@ -1,3 +1,4 @@\n a\n-b\n+c\n+d\n e\n"
     assert hunk_lines(diff) == ({2, 3}, {1: "a", 2: "c", 3: "d", 4: "e"})
@@ -219,7 +232,7 @@ def test_sync_rerun_posts_nothing_new_but_resolves_fixed(monkeypatch: pytest.Mon
     monkeypatch.setattr(github, "existing_threads", lambda pr, tok: threads)
     monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
     monkeypatch.setattr(github, "api", lambda m, p, t, b=None: calls.append((m, p)) or {"data": {}})
-    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
+    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads, remote="origin": None)
     monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
     msg = github.sync_review(pr, _result(_f(20, 20)), CHANGE, "tok", Path(".")).message
@@ -245,7 +258,7 @@ def test_sync_survives_failed_thread_updates_and_never_repeats_the_fixed_note(
 
     monkeypatch.setattr(github, "existing_threads", lambda pr, tok: [noted, _t(30, outdated=True, tid="NEW")])
     monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
-    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
+    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads, remote="origin": None)
     monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     monkeypatch.setattr(github, "api", fake_api)
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
@@ -267,7 +280,7 @@ def test_without_resolve_it_notes_fixed_and_skips_the_resolve_call(monkeypatch: 
 
     monkeypatch.setattr(github, "existing_threads", lambda pr, tok: [_t(11, outdated=True)])
     monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
-    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
+    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads, remote="origin": None)
     monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     monkeypatch.setattr(github, "api", fake_api)
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")

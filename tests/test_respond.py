@@ -170,7 +170,7 @@ def test_dismissed_and_resolved_threads_stop_counting(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(github, "existing_threads", lambda pr, tok: [dismissed, resolved, open_one])
     monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
-    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
+    monkeypatch.setattr(github, "mark_touched", lambda root, head, threads, remote="origin": None)
     monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     replies: list[str] = []
     monkeypatch.setattr(github, "api", lambda m, p, t, b=None: replies.append(p) or {})
