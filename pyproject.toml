@@ -7,7 +7,7 @@ license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "litellm>=1.108",
-    "mcp>=2.3",  # litellm imports it for any tool-calling request but does not declare it
+    "mcp>=2.3",  # litellm imports it for any tool-calling request but does not declare it (still true in 1.108.2)
     "pydantic>=2.14",
     "pyyaml>=6.0",
     "typer>=0.27",

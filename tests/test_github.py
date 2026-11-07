@@ -411,3 +411,40 @@ def test_summary_comment_is_created_then_edited_and_keeps_old_summary(monkeypatc
     assert github.upsert_summary(PR, _result(), 1, "", "tok") == "summary updated"
     assert calls == ["GET", "POST", "GET", "PATCH"] and len(store) == 1
     assert "Adds a cache" in store[1] and "✅ no open issues · 1 fixed · [latest review](https://x/r1)" in store[1]
+
+
+# --- pagination ------------------------------------------------------------------------------
+
+
+def test_list_endpoints_read_every_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = {1: list(range(100)), 2: list(range(100, 200)), 3: [200]}
+    seen: list[str] = []
+
+    def fake_api(method: str, path: str, tok: str, body: Any = None) -> Any:
+        seen.append(path)
+        return pages[int(path.rsplit("page=", 1)[1])]
+
+    monkeypatch.setattr(github, "api", fake_api)
+    assert github.api_pages("/repos/o/r/issues/1/comments", "tok") == list(range(201))
+    assert seen[-1] == "/repos/o/r/issues/1/comments?per_page=100&page=3"
+
+
+def test_review_threads_follow_the_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    def node(i: int) -> dict[str, Any]:
+        body = '**x** <!-- duhview:{"cat":"bug","sev":"minor","title":"t"} -->'
+        return {"id": f"T{i}", "isResolved": False, "isOutdated": False, "path": "a.py", "line": i,
+                "originalLine": i, "comments": {"nodes": [{"databaseId": i, "body": body}]}}
+
+    cursors: list[Any] = []
+
+    def fake_api(method: str, path: str, tok: str, body: dict[str, Any] | None = None) -> Any:
+        assert body is not None
+        after = body["variables"]["after"]
+        cursors.append(after)
+        page = {"pageInfo": {"hasNextPage": after is None, "endCursor": "C1"},
+                "nodes": [node(1)] if after is None else [node(2)]}
+        return {"data": {"repository": {"pullRequest": {"reviewThreads": page}}}}
+
+    monkeypatch.setattr(github, "api", fake_api)
+    threads = github.existing_threads(github.PullRequest("o", "r", 1, "main", "b", "h", "o/r"), "tok")
+    assert [t.id for t in threads] == ["T1", "T2"] and cursors == [None, "C1"]

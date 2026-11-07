@@ -124,3 +124,15 @@ def _result(sev: Severity | None, incomplete: list[str] | None = None) -> Review
 ])
 def test_exit_codes(sev: Severity | None, incomplete: list[str] | None, code: int) -> None:
     assert exit_code(_result(sev, incomplete), Severity.major) == code
+
+
+def test_litellm_tool_calling_path_imports() -> None:
+    """LiteLLM imports `mcp` on every tool-calling request without declaring it, and an old `mcp`
+    (seen when semgrep was installed alongside) breaks the import. Mocked: no network, no key."""
+    import litellm
+
+    tools = [{"type": "function", "function": {"name": "x", "description": "d",
+                                               "parameters": {"type": "object", "properties": {}}}}]
+    r = asyncio.run(litellm.acompletion(model="openai/gpt-5.5", messages=[{"role": "user", "content": "hi"}],
+                                        tools=tools, mock_response="ok", api_key="x"))
+    assert r.choices[0].message.content == "ok"

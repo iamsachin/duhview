@@ -85,6 +85,20 @@ def api(method: str, path: str, tok: str, body: dict[str, Any] | None = None) ->
         raise GitHubError(f"GitHub API {method} {path}: {e.reason}") from e
 
 
+MAX_PAGES = 50  # 5,000 items; a guard against looping forever on a misbehaving API
+
+
+def api_pages(path: str, tok: str) -> list[Any]:
+    """GET every page of a list endpoint."""
+    items: list[Any] = []
+    for page in range(1, MAX_PAGES + 1):
+        batch = api("GET", f"{path}?per_page=100&page={page}", tok)
+        items += batch
+        if len(batch) < 100:
+            break
+    return items
+
+
 def get_pr(owner: str, repo: str, number: int, tok: str) -> PullRequest:
     d = api("GET", f"/repos/{owner}/{repo}/pulls/{number}", tok)
     return PullRequest(owner, repo, number, d["base"]["ref"], d["base"]["sha"], d["head"]["sha"],
@@ -320,10 +334,11 @@ def plan_sync(r: ReviewResult, change: Change, threads: list[Thread], listed: li
 
 _RESOLVE = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id } } }"
 _THREADS_QUERY = """
-query($owner: String!, $repo: String!, $number: Int!) {
+query($owner: String!, $repo: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
         nodes { id isResolved isOutdated path line originalLine
                 comments(first: 50) { nodes { databaseId body originalCommit { oid } } } }
       }
@@ -339,11 +354,23 @@ def _graphql(query: str, variables: dict[str, Any], tok: str) -> Any:
     return resp["data"]
 
 
+def _all_thread_nodes(pr: PullRequest, tok: str) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    after = None
+    for _ in range(MAX_PAGES):
+        data = _graphql(_THREADS_QUERY, {"owner": pr.owner, "repo": pr.repo, "number": pr.number,
+                                         "after": after}, tok)
+        page = data["repository"]["pullRequest"]["reviewThreads"]
+        nodes += page["nodes"]
+        if not page.get("pageInfo", {}).get("hasNextPage"):
+            break
+        after = page["pageInfo"]["endCursor"]
+    return nodes
+
+
 def existing_threads(pr: PullRequest, tok: str) -> list[Thread]:
-    # shortcut: reads the first 100 threads; paginate if PRs ever carry more review threads.
-    data = _graphql(_THREADS_QUERY, {"owner": pr.owner, "repo": pr.repo, "number": pr.number}, tok)
     threads = []
-    for n in data["repository"]["pullRequest"]["reviewThreads"]["nodes"]:
+    for n in _all_thread_nodes(pr, tok):
         comments = n["comments"]["nodes"]
         if not comments or not (root := _markers(comments[0]["body"])):
             continue  # not started by duhview
@@ -374,7 +401,7 @@ def mark_touched(root: Path, head: str, threads: list[Thread]) -> None:
 
 
 def listed_findings(pr: PullRequest, tok: str) -> list[Listed]:
-    reviews = api("GET", f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/reviews?per_page=100", tok)
+    reviews = api_pages(f"/repos/{pr.owner}/{pr.repo}/pulls/{pr.number}/reviews", tok)
     return [Listed(m["file"], m["line"], m.get("cat", "")) for rv in reviews if MARKER in (rv.get("body") or "")
             for m in _markers(rv["body"]) if "file" in m and "line" in m]
 
@@ -420,7 +447,7 @@ def summary_body(pr: PullRequest, r: ReviewResult, summary: PRSummary | None, fi
 
 def upsert_summary(pr: PullRequest, r: ReviewResult, fixed: int, review_url: str, tok: str) -> str:
     """Create the summary comment, or edit the existing one in place."""
-    comments = api("GET", f"/repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments?per_page=100", tok)
+    comments = api_pages(f"/repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments", tok)
     existing = next((c for c in comments if SUMMARY_MARKER in (c.get("body") or "")), None)
     old = _state(existing["body"]) if existing else {}
     summary = r.summary or (PRSummary.model_validate(old["summary"]) if old.get("summary") else None)

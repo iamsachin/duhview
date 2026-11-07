@@ -52,7 +52,7 @@ runs:
         # semgrep gets its own virtualenv: installed next to duhview it downgrades shared
         # dependencies (it broke LiteLLM's tool calling). Only its executable goes on PATH.
         python -m venv "$RUNNER_TEMP/semgrep-venv"
-        "$RUNNER_TEMP/semgrep-venv/bin/pip" install --quiet semgrep
+        "$RUNNER_TEMP/semgrep-venv/bin/pip" install --quiet semgrep==1.184.0  # pinned: new releases can change results
         ln -s "$RUNNER_TEMP/semgrep-venv/bin/semgrep" "$bin/semgrep"
         # Pinned version and SHA-256 from the official release, so a changed download is rejected.
         version=8.30.1
