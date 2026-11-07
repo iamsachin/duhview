@@ -89,6 +89,11 @@ suggestion when the fix is a direct replacement; the rest go in the summary. The
 always a plain comment; it never blocks merging by itself. The token comes from `GITHUB_TOKEN`,
 `GH_TOKEN` or `gh auth`.
 
+With `--post`, duhview also keeps one **summary comment** on the PR (what it does, what changed,
+where to look hardest, and the current open/fixed status). It is edited in place on every run
+rather than posted again. On later pushes, only new findings are posted; a finding that comes
+back more severe gets a reply on its thread, and fixed ones are noted.
+
 In PR mode, `.duhview/config.yaml`, `.duhview/rules.md` and `.duhview/fp-filter.md` are read
 from the **base branch**, so a pull request cannot weaken its own review. Changes it makes to
 those files are reviewed like any other change.

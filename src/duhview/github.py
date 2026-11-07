@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from duhview.collect import Change, GitError, git, hunk_lines, temp_worktree
-from duhview.types import Finding, ReviewResult, Severity
+from duhview.types import Finding, PRSummary, ReviewResult, Severity
 
 API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 MARKER = "<!-- duhview -->"  # lets later runs find their own reviews
@@ -357,6 +357,59 @@ def listed_findings(pr: PullRequest, tok: str) -> list[Listed]:
             for m in _markers(rv["body"]) if "file" in m and "line" in m]
 
 
+# --- the summary comment: one per PR, edited in place on every run ---------------------------
+
+SUMMARY_MARKER = "<!-- duhview:summary -->"
+_STATE_RE = re.compile(r"<!-- duhview-state:(\{.*?\}) -->", re.DOTALL)
+
+
+def _state(body: str) -> dict[str, Any]:
+    if m := _STATE_RE.search(body or ""):
+        try:
+            return dict(json.loads(m.group(1)))
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def summary_body(pr: PullRequest, r: ReviewResult, summary: PRSummary | None, fixed: int,
+                 review_url: str) -> str:
+    out = [SUMMARY_MARKER, "## 📝 duhview summary", ""]
+    if summary:
+        out += [_safe(summary.overview), "", "**What changed**", *(f"- {_safe(c)}" for c in summary.changes),
+                "", f"**Review focus:** {_safe(summary.focus)}"]
+    else:
+        out.append("_No summary yet._")
+    counts = [f"{_BADGE[s]} {n}" for s in Severity if (n := sum(f.severity == s for f in r.findings))]
+    status = " · ".join(counts) + " open" if counts else "✅ no open issues"
+    if fixed:
+        status += f" · {fixed} fixed"
+    if review_url:
+        status += f" · [latest review]({review_url})"
+    out += ["", "---", f"**Status at `{pr.head_sha[:7]}`:** {status}"]
+    if r.incomplete:
+        out.append("⚠️ The last review was incomplete; see the run log.")
+    out.append(f"<sub>Updated on every push · `{r.model}`</sub>")
+    # Kept so a later run can reuse the summary if generating it fails. ">" is escaped so the
+    # JSON can never close the HTML comment early.
+    state = json.dumps({"summary": summary.model_dump() if summary else None, "review": review_url})
+    return "\n".join(out) + f"\n<!-- duhview-state:{state.replace('>', '\\u003e')} -->"
+
+
+def upsert_summary(pr: PullRequest, r: ReviewResult, fixed: int, review_url: str, tok: str) -> str:
+    """Create the summary comment, or edit the existing one in place."""
+    comments = api("GET", f"/repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments?per_page=100", tok)
+    existing = next((c for c in comments if SUMMARY_MARKER in (c.get("body") or "")), None)
+    old = _state(existing["body"]) if existing else {}
+    summary = r.summary or (PRSummary.model_validate(old["summary"]) if old.get("summary") else None)
+    body = summary_body(pr, r, summary, fixed, review_url or old.get("review", ""))
+    if existing:
+        api("PATCH", f"/repos/{pr.owner}/{pr.repo}/issues/comments/{existing['id']}", tok, {"body": body})
+        return "summary updated"
+    api("POST", f"/repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments", tok, {"body": body})
+    return "summary posted"
+
+
 def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root: Path,
                 resolve: bool = True) -> str:
     """Post new findings, reply on threads that got worse, note (and, if `resolve`, resolve) threads
@@ -366,10 +419,12 @@ def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root
     mark_touched(root, pr.head_sha, threads)
     plan = plan_sync(r, change, threads, listed_findings(pr, tok))
     done: list[str] = []
+    review_url = ""
     if plan.new:
         progress = (f"{len(plan.new)} new · {plan.open} still open from earlier · {len(plan.fixed)} fixed"
                     if plan.open or plan.fixed else None)
-        done.append(f"posted {len(plan.new)} new finding(s): {post_review(pr, r, change, tok, plan.new, progress)}")
+        review_url = post_review(pr, r, change, tok, plan.new, progress)
+        done.append(f"posted {len(plan.new)} new finding(s): {review_url}")
     else:
         done.append(f"nothing new to post ({plan.open} earlier finding(s) still open)")
 
@@ -402,6 +457,11 @@ def sync_review(pr: PullRequest, r: ReviewResult, change: Change, tok: str, root
         done.append(f"{worse} got worse (replied)")
     if plan.fixed:
         done.append(f"{len(plan.fixed)} fixed ({resolved} resolved)" if resolve else f"{len(plan.fixed)} fixed (noted)")
+    fixed_so_far = sum(t.fixed_noted for t in threads) + sum(not t.fixed_noted for t in plan.fixed)
+    try:
+        done.append(upsert_summary(pr, r, fixed_so_far, review_url, tok))
+    except GitHubError as e:
+        failed.append(f"summary: {e}")
     if failed:
         hint = (" (the token may not be allowed to resolve review threads)"
                 if any("not accessible" in f for f in failed) else "")

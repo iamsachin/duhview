@@ -63,6 +63,12 @@ class Finding(FindingDraft):
         return cls(**d.model_dump(), id=hashlib.sha1(key.encode()).hexdigest()[:12], source=source)
 
 
+class PRSummary(BaseModel):
+    overview: str
+    changes: list[str]
+    focus: str
+
+
 class ReviewResult(BaseModel):
     target: str
     model: str
@@ -71,6 +77,7 @@ class ReviewResult(BaseModel):
     incomplete: list[str]
     notes: list[str] = []  # informational, e.g. an optional scanner that is not installed
     units: int = 1
+    summary: PRSummary | None = None  # only when asked for (PR mode)
     cost_usd: float
     cost_known: bool
     archive_dir: str | None = None

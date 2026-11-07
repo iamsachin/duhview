@@ -13,13 +13,15 @@ from duhview.collect import Change, Reader, project_context, review_units
 from duhview.config import Config
 from duhview.scan import run_scanners
 from duhview.tools import RepoTools
-from duhview.types import FinderOutput, Finding, FindingDraft, ReviewResult, Verdict
+from duhview.types import FinderOutput, Finding, FindingDraft, PRSummary, ReviewResult, Verdict
 
 FINDER_CONCURRENCY = 4
 FINDER_BUDGET_SHARE_WITH_VERIFY = 0.7  # leave the rest for the verify pass
 BUDGET_SAFETY_MARGIN = 0.75  # the final answer turn costs more than tool turns (reasoning, full context)
 VERIFY_CONCURRENCY = 4
 VERIFY_MAX_TOOL_CALLS = 15
+SUMMARY_FILE_CHARS = 20_000  # per file, so one huge file can't crowd out the rest
+SUMMARY_TOTAL_CHARS = 150_000
 
 
 def _prompt(name: str) -> str:
@@ -53,6 +55,19 @@ def _dedupe(findings: list[Finding]) -> list[Finding]:
     return kept
 
 
+async def _summarize(change: Change, model: str, budget: llm.Budget, log: list[Any], timeout: int) -> PRSummary:
+    parts, size = [], 0
+    for path in sorted(change.files):
+        d = change.files[path]
+        if size + min(len(d), SUMMARY_FILE_CHARS) > SUMMARY_TOTAL_CHARS:
+            parts.append(f"diff --git a/{path} b/{path}\n(diff omitted for length)\n")
+            continue
+        parts.append(d[:SUMMARY_FILE_CHARS] + ("\n... (file diff truncated)\n" if len(d) > SUMMARY_FILE_CHARS else ""))
+        size += min(len(d), SUMMARY_FILE_CHARS)
+    user = _fence("untrusted_diff", "".join(parts))
+    return await asyncio.wait_for(ask_json(model, _prompt("summary"), user, PRSummary, None, budget, 0, log), timeout)
+
+
 def _label(unit: dict[str, str]) -> str:
     names = list(unit)
     return names[0] if len(names) == 1 else f"{names[0]} (+{len(names) - 1} files)"
@@ -60,9 +75,10 @@ def _label(unit: dict[str, str]) -> str:
 
 async def run_review(root: Path, change: Change, cfg: Config, finder_model: str, verifier_model: str | None,
                      spec: Path | None, offline: bool = False, read_trusted: Reader | None = None,
-                     archive_root: Path | None = None) -> ReviewResult:
+                     archive_root: Path | None = None, summarize: bool = False) -> ReviewResult:
     """`verifier_model=None` skips the verify pass. `read_trusted` supplies team rules and the
-    false-positive filter (the PR base in PR mode); `archive_root` is where runs are saved."""
+    false-positive filter (the PR base in PR mode); `archive_root` is where runs are saved.
+    `summarize` also writes a short summary of the change for human reviewers."""
     budget = llm.Budget(cfg.budget.max_usd_per_review)
     archive = Archive(archive_root or root)
     tools = RepoTools(root)
@@ -116,6 +132,8 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
                 incomplete.append(f"{label}: diff-only review failed ({type(e2).__name__}: {e2})")
                 return []
 
+    # The summary needs no tools, so it runs alongside the finders.
+    summary_task = asyncio.create_task(_summarize(change, finder_model, budget, log, timeout)) if summarize else None
     drafts = [d for ds in await asyncio.gather(*(find(u) for u in units)) for d in ds]
     # Agent findings first so, on ties, the agent's fuller explanation wins over the scanner's.
     candidates = _dedupe([Finding.from_draft(d) for d in drafts] + scanner_findings)
@@ -150,8 +168,14 @@ async def run_review(root: Path, change: Change, cfg: Config, finder_model: str,
 
     min_rank = cfg.review.min_severity.rank
     findings = sorted((f for f in results if f and f.severity.rank <= min_rank), key=lambda f: f.severity.rank)
+    summary = None
+    if summary_task is not None:
+        try:
+            summary = await summary_task
+        except Exception as e:  # noqa: BLE001 - a summary is a nice-to-have; never fail the review
+            notes.append(f"summary unavailable ({type(e).__name__})")
     result = ReviewResult(target=change.target, model=finder_model, verifier_model=verifier_model,
-                          findings=findings, incomplete=incomplete, notes=notes, units=len(units),
+                          findings=findings, incomplete=incomplete, notes=notes, units=len(units), summary=summary,
                           cost_usd=round(budget.spent, 4), cost_known=budget.known, archive_dir=str(archive.dir))
     archive.write("conversations.json", log)
     archive.write("rejected.json", rejected)

@@ -10,7 +10,7 @@ from duhview import github, model
 from duhview.cli import app
 from duhview.collect import Change, hunk_lines, revision_reader
 from duhview.config import load_config
-from duhview.types import Finding, FindingDraft, ReviewResult, Severity
+from duhview.types import Finding, FindingDraft, PRSummary, ReviewResult, Severity
 
 from .test_core import _resp
 
@@ -194,6 +194,7 @@ def test_sync_rerun_posts_nothing_new_but_resolves_fixed(monkeypatch: pytest.Mon
     monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
     monkeypatch.setattr(github, "api", lambda m, p, t, b=None: calls.append((m, p)) or {"data": {}})
     monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
+    monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
     msg = github.sync_review(pr, _result(_f(20, 20)), CHANGE, "tok", Path("."))
     assert "nothing new to post" in msg and "1 fixed" in msg
@@ -219,6 +220,7 @@ def test_sync_survives_failed_thread_updates_and_never_repeats_the_fixed_note(
     monkeypatch.setattr(github, "existing_threads", lambda pr, tok: [noted, _t(30, outdated=True, tid="NEW")])
     monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
     monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
+    monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     monkeypatch.setattr(github, "api", fake_api)
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
     msg = github.sync_review(pr, _result(_f(20, 20, "brand new")), CHANGE, "tok", Path("."))
@@ -240,6 +242,7 @@ def test_without_resolve_it_notes_fixed_and_skips_the_resolve_call(monkeypatch: 
     monkeypatch.setattr(github, "existing_threads", lambda pr, tok: [_t(11, outdated=True)])
     monkeypatch.setattr(github, "listed_findings", lambda pr, tok: [])
     monkeypatch.setattr(github, "mark_touched", lambda root, head, threads: None)
+    monkeypatch.setattr(github, "upsert_summary", lambda *a: "summary updated")
     monkeypatch.setattr(github, "api", fake_api)
     pr = github.PullRequest("o", "r", 1, "main", "b" * 40, "h" * 40, "o/r")
     msg = github.sync_review(pr, _result(), CHANGE, "tok", Path("."), resolve=False)
@@ -302,15 +305,22 @@ def test_review_pr_and_post(pr_repo: tuple[Path, str, str], monkeypatch: pytest.
                     "head": {"sha": head, "repo": {"full_name": "acme/web"}}}
         if path == "/graphql":  # no earlier duhview threads
             return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}}
-        if method == "GET":  # no earlier reviews
+        if method == "GET":  # no earlier reviews or comments
             return []
         assert body is not None
+        if path.endswith("/issues/7/comments"):
+            summaries.append(body["body"])
+            return {}
         posted.append(body)
         return {"html_url": "https://github.com/acme/web/pull/7#pullrequestreview-1"}
 
     finder_inputs: list[str] = []
+    summaries: list[str] = []
 
     async def fake_complete(m: str, messages: list[dict[str, Any]], tools: Any, budget: Any) -> Any:
+        if "summarize a pull request" in messages[0]["content"]:
+            return _resp(content=json.dumps({"overview": "Changes add() to subtract.",
+                                             "changes": ["Math: add returns a - b"], "focus": "add()"}))
         finder_inputs.append(messages[1]["content"])
         return _resp(content=json.dumps({"findings": [{
             "file": "src/app.py", "start_line": 2, "end_line": 2, "severity": "major", "category": "bug",
@@ -332,8 +342,49 @@ def test_review_pr_and_post(pr_repo: tuple[Path, str, str], monkeypatch: pytest.
     assert review["commit_id"] == head and review["event"] == "COMMENT"
     (c,) = review["comments"]
     assert (c["path"], c["line"]) == ("src/app.py", 2) and "```suggestion\n    return a + b\n```" in c["body"]
+    (summary,) = summaries
+    assert "Changes add() to subtract." in summary and "🟠 Major 1 open" in summary
     # The user's checkout is untouched, and the temporary worktree is gone.
     assert _git(repo, "branch", "--show-current") == "main"
     assert (repo / "README.md").read_text() == "my uncommitted work\n"
     assert _git(repo, "worktree", "list").count("\n") == 0
     assert list((repo / ".duhview" / "runs").iterdir())  # archived under the real repo
+
+
+# --- the summary comment ---------------------------------------------------------------------
+
+PR = github.PullRequest("o", "r", 5, "main", "b" * 40, "h" * 40, "o/r")
+SUMMARY = PRSummary(overview="Adds a cache --> faster.", changes=["Cache: new LRU"], focus="eviction")
+
+
+def test_summary_body_has_status_and_survives_comment_breaking_text() -> None:
+    body = github.summary_body(PR, _result(_f(1, 1), _sev(_f(2, 2), "critical")), SUMMARY, 2, "https://x/r")
+    assert "**What changed**\n- Cache: new LRU" in body and "**Review focus:** eviction" in body
+    assert "🔴 Critical 1 · 🟠 Major 1 open · 2 fixed · [latest review](https://x/r)" in body
+    # Visible text may say "-->"; inside the hidden state it must be escaped so it can't end the comment.
+    assert body.split("<!-- duhview-state:")[1].count("-->") == 1
+    assert github._state(body)["summary"]["overview"] == "Adds a cache --> faster."
+
+
+def test_summary_comment_is_created_then_edited_and_keeps_old_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    store: dict[int, str] = {}
+    calls: list[str] = []
+
+    def fake_api(method: str, path: str, tok: str, body: dict[str, Any] | None = None) -> Any:
+        calls.append(method)
+        if method == "GET":
+            return [{"id": i, "body": b} for i, b in store.items()]
+        assert body is not None
+        if method == "POST":
+            store[1] = body["body"]
+        else:
+            store[int(path.rsplit("/", 1)[1])] = body["body"]
+        return {}
+
+    monkeypatch.setattr(github, "api", fake_api)
+    with_summary = _result(_f(1, 1)).model_copy(update={"summary": SUMMARY})
+    assert github.upsert_summary(PR, with_summary, 0, "https://x/r1", "tok") == "summary posted"
+    # Next run: summary generation failed and no new review was posted. Keep both from before.
+    assert github.upsert_summary(PR, _result(), 1, "", "tok") == "summary updated"
+    assert calls == ["GET", "POST", "GET", "PATCH"] and len(store) == 1
+    assert "Adds a cache" in store[1] and "✅ no open issues · 1 fixed · [latest review](https://x/r1)" in store[1]

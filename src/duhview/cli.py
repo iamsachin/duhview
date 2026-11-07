@@ -84,7 +84,7 @@ def review(
         if not json_out:
             typer.echo(f"duhview: reviewing {len(change.files)} file(s) in {change.target} with {finder}…", err=True)
         result = asyncio.run(run_review(review_root, change, cfg, finder, verifier, spec, offline,
-                                        read_trusted=read_trusted, archive_root=root))
+                                        read_trusted=read_trusted, archive_root=root, summarize=post))
         reports = write_reports(result, Path(result.archive_dir or "."))
         if sarif:
             shutil.copyfile(reports["sarif"], sarif)
