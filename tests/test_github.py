@@ -75,6 +75,12 @@ def test_review_text_cannot_ping_people_and_fences_survive_backticks() -> None:
     assert "````suggestion\ns = ```weird```\n````" in body
 
 
+def test_marker_cannot_be_closed_early_by_a_title() -> None:
+    body = _comment_body_for(_f(11, 11, title="evil --> <img src=x>"))
+    hidden = body.rsplit("<!-- duhview:", 1)[1]
+    assert hidden.count("-->") == 1 and github._markers(body)[0]["title"] == "evil --> <img src=x>"
+
+
 def test_post_falls_back_to_summary_when_github_rejects_positions(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -157,6 +163,23 @@ def test_fix_that_adds_lines_next_to_the_flagged_line_counts_as_touched(repo: Pa
     assert not gone.touched
     plan = github.plan_sync(_result(), Change("PR", {"src/app.py": "x"}), [near, far], [])
     assert [t.id for t in plan.fixed] == ["N"]
+
+
+def test_a_different_issue_near_a_fixed_line_is_not_taken_for_the_old_one() -> None:
+    """Seen live on PR #4: the 'overwritten instead of summed' bug was fixed, and a new, unrelated
+    finding two lines away kept the old thread open and was itself never posted."""
+    old = _t(12, outdated=True, tid="OLD")
+    old.title = "Per-model cost is overwritten instead of summed"
+    new = _f(11, 11, "Cost is attributed to the finder model only, and unpriced calls are ignored")
+    plan = github.plan_sync(_result(new), CHANGE, [old], [])
+    assert plan.new == [new] and [t.id for t in plan.fixed] == ["OLD"]
+    # The same problem, reworded, on changed code is still recognised as the old one.
+    same = _f(11, 11, "Per-model costs get overwritten rather than summed")
+    assert github.plan_sync(_result(same), CHANGE, [old], []).new == []
+    # On unchanged code, location alone is enough (titles vary run to run).
+    stable = _t(12, tid="STABLE")
+    stable.title = "Per-model cost is overwritten instead of summed"
+    assert github.plan_sync(_result(new), CHANGE, [stable], []).new == []
 
 
 def test_plan_respects_human_resolved_threads_and_listed_findings() -> None:

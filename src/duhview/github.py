@@ -126,7 +126,9 @@ def _reindent(code: str, original_first_line: str) -> str:
 
 
 def _marker(**meta: Any) -> str:
-    return f"<!-- duhview:{json.dumps(meta, separators=(',', ':'))} -->"
+    # ">" escaped so model text can never close the HTML comment early.
+    data = json.dumps(meta, separators=(',', ':')).replace(">", "\\u003e")
+    return f"<!-- duhview:{data} -->"
 
 
 _MARKER_RE = re.compile(r"<!-- duhview:(\{.*?\}) -->")
@@ -159,7 +161,7 @@ def _comment_body(f: Finding, original_first_line: str | None) -> str:
     if original_first_line is not None and f.suggestion is not None:
         out += ["", "<sub>Suggested fix (use <b>Commit suggestion</b> to apply):</sub>", "",
                 _suggestion(_reindent(f.suggestion, original_first_line))]
-    return "\n".join(out + ["", _marker(cat=str(f.category), sev=str(f.severity))])
+    return "\n".join(out + ["", _marker(cat=str(f.category), sev=str(f.severity), title=_safe(f.title))])
 
 
 def _details(title: str, lines: list[str]) -> list[str]:
@@ -252,6 +254,7 @@ class Thread:
     commit: str = ""  # commit the comment was posted on
     touched: bool = False  # code within MATCH_LINES of the comment changed since `commit`
     fixed_noted: bool = False  # duhview already replied that it looks fixed
+    title: str = ""  # the finding's title when it was posted
 
 
 @dataclass
@@ -275,6 +278,25 @@ def _same(path: str, line: int | None, category: str, f: Finding) -> bool:
             and f.start_line - MATCH_LINES <= line <= f.end_line + MATCH_LINES)
 
 
+TITLE_OVERLAP = 0.3
+_WORD = re.compile(r"[a-z0-9_]{3,}")
+
+
+def _similar_titles(a: str, b: str) -> bool:
+    """Do two finding titles describe the same problem? Word overlap; models reword titles between
+    runs but keep the key terms."""
+    wa, wb = set(_WORD.findall(a.lower())), set(_WORD.findall(b.lower()))
+    return bool(wa and wb) and len(wa & wb) / len(wa | wb) >= TITLE_OVERLAP
+
+
+def _same_issue(t: "Thread", f: Finding) -> bool:
+    """Same place and category; and if the code there changed, also a similar title. Seen live: a
+    different problem near a fixed line was taken for the old one, hiding both."""
+    if not _same(t.path, t.line, t.category, f):
+        return False
+    return not (t.outdated or t.touched) or not t.title or _similar_titles(t.title, f.title)
+
+
 def plan_sync(r: ReviewResult, change: Change, threads: list[Thread], listed: list[Listed]) -> SyncPlan:
     """Decide what to post on a re-run. Threads a person resolved are left alone. A thread is only
     called fixed when the finding is gone AND the code under it changed (or left the diff), so a
@@ -283,7 +305,7 @@ def plan_sync(r: ReviewResult, change: Change, threads: list[Thread], listed: li
     new: list[Finding] = []
     worse: list[tuple[Thread, Finding]] = []
     for f in r.findings:
-        t = next((t for t in threads if t.id not in used and _same(t.path, t.line, t.category, f)), None)
+        t = next((t for t in threads if t.id not in used and _same_issue(t, f)), None)
         if t is not None:
             used.add(t.id)
             if not t.resolved and f.severity.rank < t.severity.rank:
@@ -330,7 +352,7 @@ def existing_threads(pr: PullRequest, tok: str) -> list[Thread]:
         threads.append(Thread(n["id"], comments[0]["databaseId"], n["path"], n["line"] or n["originalLine"],
                               root[0].get("cat", ""), min(sevs, key=lambda s: s.rank), n["isResolved"],
                               n["isOutdated"], (comments[0].get("originalCommit") or {}).get("oid", ""),
-                              fixed_noted=any(m.get("fixed") for m in marks)))
+                              fixed_noted=any(m.get("fixed") for m in marks), title=str(root[0].get("title", ""))))
     return threads
 
 
