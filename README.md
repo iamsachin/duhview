@@ -201,6 +201,21 @@ JavaScript, TypeScript/TSX, Rust, Go, Java, C, C++, C#, Ruby, PHP, Kotlin and Sw
 fall back to plain text matches. Grammars are pinned PyPI packages; nothing is downloaded at
 runtime.
 
+## ReviewBench
+
+`integrations/reviewbench/` packages duhview as an agent for
+[ReviewBench](https://github.com/review-bench/ReviewBench), an open benchmark of AI code
+reviewers on real pull requests:
+
+```sh
+docker build --platform linux/amd64 -f integrations/reviewbench/Dockerfile -t duhview-reviewbench .
+```
+
+The container reads the benchmark's `RB_*` variables and writes the findings file. Settings come
+from `RB_CONFIG_MODEL` (default `claude-sonnet-5-5`), `RB_CONFIG_VERIFIER` and `RB_CONFIG_BUDGET`
+(default 2.0). Scanners are off in the container, since only the model API is reachable. A
+review that fails exits non-zero, rather than reporting "no findings".
+
 ## Safety
 
 - The agent's tools are read-only and run in-process, never through a shell.

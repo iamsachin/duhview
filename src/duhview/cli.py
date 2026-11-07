@@ -137,6 +137,14 @@ def respond(
     typer.echo(f"duhview: {message}")
 
 
+@app.command(hidden=True)
+def reviewbench() -> None:
+    """Entry point for the ReviewBench container (reads RB_* variables)."""
+    from duhview.reviewbench import main as rb_main
+
+    raise typer.Exit(rb_main())
+
+
 @app.command("hook-run", hidden=True)
 def hook_run(
     remote: Annotated[str, typer.Argument()] = "origin",

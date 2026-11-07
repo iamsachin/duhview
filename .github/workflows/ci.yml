@@ -21,3 +21,16 @@ jobs:
       - run: pytest -q
       - run: ruff check .
       - run: mypy src eval
+
+  reviewbench-image:
+    # The ReviewBench agent image must build for linux/amd64 and start the adapter.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --platform linux/amd64 -f integrations/reviewbench/Dockerfile -t duhview-reviewbench .
+      - name: Entrypoint starts the adapter
+        run: |
+          set +e
+          out=$(docker run --rm duhview-reviewbench 2>&1)
+          echo "$out"
+          echo "$out" | grep -q "RB_OUT is not set"
